@@ -283,6 +283,33 @@ with st.expander("Send Telegram / Email Alert"):
             except Exception as e:
                 st.error(f"Telegram exception: {e}")
 
+    st.markdown("---")
+    st.subheader("Send test Email")
+    with st.form("email_test"):
+        email_from = st.text_input("From (or set in secrets)", value=st.secrets.get("EMAIL_FROM", ""))
+        email_to = st.text_input("To (or set in secrets)", value=st.secrets.get("EMAIL_TO", ""))
+        email_pass = st.text_input("Password (or set in secrets)", value=st.secrets.get("EMAIL_PASSWORD", ""), type="password")
+        email_subj = st.text_input("Subject", value="Test from TheBot dashboard")
+        email_body = st.text_area("Body", value="This is a test")
+        send_email = st.form_submit_button("Send Test Email")
+        if send_email:
+            if not (email_from and email_pass and email_to):
+                st.error("Please provide From/Password/To (or set in Streamlit secrets)")
+            else:
+                try:
+                    import smtplib
+                    from email.mime.text import MIMEText
+                    msg = MIMEText(email_body)
+                    msg["Subject"] = email_subj
+                    msg["From"] = email_from
+                    msg["To"] = email_to
+                    with smtplib.SMTP_SSL("smtp.gmail.com", 465) as s:
+                        s.login(email_from, email_pass)
+                        s.sendmail(email_from, email_to, msg.as_string())
+                    st.success("Email sent (check inbox)")
+                except Exception as e:
+                    st.error(f"Email failed: {e}")
+
 with st.expander("Generate proposed action (download JSON)"):
     st.write("Create a JSON file that can be placed in your bot's project folder as `proposed_changes.json` to instruct the bot to execute actions.")
     sample = [{
@@ -295,6 +322,28 @@ with st.expander("Generate proposed action (download JSON)"):
     }]
     st.json(sample)
     st.download_button("Download proposed_changes.json", data=json.dumps(sample, indent=2), file_name="proposed_changes.json", mime="application/json")
+
+    st.markdown("---")
+    st.subheader("Create modify_sl or close_position proposal")
+    with st.form("proposal_form"):
+        p_action = st.selectbox("Action", ["modify_sl", "close_position"], index=0)
+        p_position = st.text_input("Position ticket (numeric)")
+        p_new_sl = st.text_input("New SL (price) — required for modify_sl", value="")
+        submitted = st.form_submit_button("Generate proposal JSON")
+        if submitted:
+            try:
+                pos_i = int(p_position)
+            except Exception:
+                st.error("Invalid position id")
+                pos_i = None
+            if p_action == "modify_sl" and (not p_new_sl or pos_i is None):
+                st.error("Provide numeric position and new_sl for modify_sl")
+            else:
+                obj = {"ts": datetime.utcnow().isoformat(), "action": p_action, "position": pos_i}
+                if p_action == "modify_sl":
+                    obj["new_sl"] = float(p_new_sl)
+                st.json(obj)
+                st.download_button("Download proposal", data=json.dumps([obj], indent=2), file_name="proposed_changes.json", mime="application/json")
 
 st.markdown('</div>', unsafe_allow_html=True)
 
