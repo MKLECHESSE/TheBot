@@ -1,4 +1,4 @@
-# TheBot — Setup & Safety
+﻿# TheBot ÔÇö Setup & Safety
 
 This project is a Python trading bot designed to run with MetaTrader 5 (MT5). Follow these steps to prepare your environment safely.
 
@@ -31,7 +31,7 @@ python .\TheBot.py
 
 - If Pylance (VS Code) marks imports as unresolved:
   - Confirm VS Code uses the same interpreter as your venv (bottom-right status bar).
-  - Restart the Python Language Server (Command Palette → "Python: Restart Language Server").
+  - Restart the Python Language Server (Command Palette ÔåÆ "Python: Restart Language Server").
   - Add site-packages to `python.analysis.extraPaths` if necessary.
 
 ## Safety notes
@@ -43,3 +43,10 @@ python .\TheBot.py
 - Run the import check in your environment and paste the output here.
 - Add a safety wrapper to prevent accidental `LIVE_TRADING` in the code.
 - Help configure VS Code settings if Pylance still flags unresolved imports.
+
+---
+
+Remote README:
+
+# TheBot
+Trading bot platform-streamlit
