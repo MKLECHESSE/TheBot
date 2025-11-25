@@ -586,6 +586,99 @@ def save_proposed_change(item):
         logging.exception("Failed to save proposed change: %s", e)
 
 
+def process_proposed_changes():
+    """Process a local `proposed_changes.json` file containing action dicts.
+
+    This allows an external UI or operator to drop-in a JSON file with
+    instructions like `{'action':'order_send','symbol':'EURUSD','signal':'BUY'}`
+    and have the running bot execute them (when live_trading is enabled).
+    After processing, the file is archived to `proposed_changes_executed.json`.
+    """
+    path = os.path.join(BASE_DIR, "proposed_changes.json")
+    if not os.path.exists(path):
+        return
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            items = json.load(f)
+    except Exception:
+        logging.exception("Failed to read proposed_changes.json")
+        return
+
+    if not items:
+        return
+
+    executed = []
+    for item in items:
+        try:
+            act = item.get("action")
+            if act == "order_send":
+                sym = item.get("symbol")
+                sig = item.get("signal")
+                ind = item.get("indicators", {})
+                logging.info("Processing proposed order_send: %s %s", sig, sym)
+                if config.get("live_trading", False) and not DRY_RUN:
+                    execute_trade(sym, sig, ind, extra_comment=item.get("comment", "proposed_action"))
+                    logging.info("Executed proposed order for %s", sym)
+                else:
+                    save_proposed_change({"ts": datetime.utcnow().isoformat(), "action": "simulated_execution", "source": "process_proposed_changes", "orig": item})
+                executed.append(item)
+            elif act == "modify_sl":
+                # attempt to modify SL for a position (best-effort)
+                pos = int(item.get("position")) if item.get("position") else None
+                new_sl = float(item.get("new_sl")) if item.get("new_sl") else None
+                if pos and new_sl is not None:
+                    try:
+                        if mt5 is not None and config.get("live_trading", False) and not DRY_RUN:
+                            req = {"action": getattr(mt5, "TRADE_ACTION_SLTP", 0), "position": pos, "sl": float(new_sl), "tp": 0}
+                            mt5.order_send(req)
+                            logging.info("Modified SL for position %s -> %s", pos, new_sl)
+                        else:
+                            logging.info("Simulated modify_sl for %s -> %s", pos, new_sl)
+                    except Exception:
+                        logging.exception("modify_sl failed for %s", pos)
+                executed.append(item)
+            elif act == "close_position":
+                pos = int(item.get("position")) if item.get("position") else None
+                if pos:
+                    try:
+                        if mt5 is not None and config.get("live_trading", False) and not DRY_RUN:
+                            req = {"action": mt5.TRADE_ACTION_CLOSE_BY, "position": pos}
+                            mt5.order_send(req)
+                            logging.info("Closed position %s", pos)
+                        else:
+                            logging.info("Simulated close_position %s", pos)
+                    except Exception:
+                        logging.exception("close_position failed for %s", pos)
+                executed.append(item)
+            else:
+                logging.warning("Unknown proposed action: %s", act)
+                executed.append(item)
+        except Exception:
+            logging.exception("Failed to process proposed item: %s", item)
+
+    # archive executed items
+    try:
+        arch_path = os.path.join(BASE_DIR, "proposed_changes_executed.json")
+        existing = []
+        if os.path.exists(arch_path):
+            try:
+                with open(arch_path, "r", encoding="utf-8") as f:
+                    existing = json.load(f)
+            except Exception:
+                existing = []
+        existing.extend(executed)
+        with open(arch_path, "w", encoding="utf-8") as f:
+            json.dump(existing, f, indent=2, ensure_ascii=False)
+    except Exception:
+        logging.exception("Failed to archive executed proposed changes")
+
+    # remove original file
+    try:
+        os.remove(path)
+    except Exception:
+        logging.exception("Failed to remove processed proposed_changes.json")
+
+
 # ============================================================
 # 🚀 Bot Loop
 # ============================================================
@@ -643,6 +736,11 @@ def run_starter_loop():
                     logging.exception("Error analyzing %s: %s", s, e)
                     time.sleep(1)
             logging.info("Cycle complete")
+            # process any proposed changes created by an operator/UI
+            try:
+                process_proposed_changes()
+            except Exception:
+                logging.exception("process_proposed_changes failed")
             # If --once flag set, exit after single cycle
             if ONCE:
                 logging.info("Once-mode enabled; exiting after one cycle")

@@ -261,6 +261,43 @@ else:
 
 st.markdown('</div>', unsafe_allow_html=True)
 
+# ============ ALERTS & ACTIONS ============
+st.markdown('<div class="card">', unsafe_allow_html=True)
+st.markdown('<div class="card-header">🚨 Alerts & Actions</div>', unsafe_allow_html=True)
+
+with st.expander("Send Telegram / Email Alert"):
+    tg_token = st.text_input("Telegram bot token (or set in Secrets)", value=st.secrets.get("TELEGRAM_BOT_TOKEN", ""))
+    tg_chat = st.text_input("Telegram chat id (or set in Secrets)", value=st.secrets.get("TELEGRAM_CHAT_ID", ""))
+    alert_msg = st.text_area("Message", value="Test alert from TheBot dashboard")
+    if st.button("Send Telegram Alert"):
+        if not tg_token or not tg_chat:
+            st.error("Provide Telegram token and chat id (or set in Streamlit secrets)")
+        else:
+            import requests
+            try:
+                r = requests.post(f"https://api.telegram.org/bot{tg_token}/sendMessage", data={"chat_id": tg_chat, "text": alert_msg}, timeout=10)
+                if r.ok:
+                    st.success("Telegram alert sent")
+                else:
+                    st.error(f"Telegram failed: {r.text}")
+            except Exception as e:
+                st.error(f"Telegram exception: {e}")
+
+with st.expander("Generate proposed action (download JSON)"):
+    st.write("Create a JSON file that can be placed in your bot's project folder as `proposed_changes.json` to instruct the bot to execute actions.")
+    sample = [{
+        "ts": datetime.utcnow().isoformat(),
+        "action": "order_send",
+        "symbol": "EURUSD",
+        "signal": "BUY",
+        "comment": "from-dashboard",
+        "indicators": {}
+    }]
+    st.json(sample)
+    st.download_button("Download proposed_changes.json", data=json.dumps(sample, indent=2), file_name="proposed_changes.json", mime="application/json")
+
+st.markdown('</div>', unsafe_allow_html=True)
+
 # ============ SYMBOL BREAKDOWN ============
 st.markdown('<div class="card">', unsafe_allow_html=True)
 st.markdown('<div class="card-header">📍 Performance by Symbol</div>', unsafe_allow_html=True)
