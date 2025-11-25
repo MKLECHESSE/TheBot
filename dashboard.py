@@ -1,51 +1,101 @@
 #!/usr/bin/env python3
-"""Streamlit dashboard for TheBot performance and backtest results — Enhanced for live trading.
-
-Run locally:
-    .\.venv\Scripts\Activate.ps1
-    pip install streamlit plotly pandas
-    streamlit run dashboard.py
-
-The dashboard reads `performance_log.csv` (JSON-per-line rows) and
-`backtest_results.json` (from `backtest_engine.py --output`) if present.
-"""
+"""TheBot — Premium Trading Dashboard (inspired by altBot design)"""
 import os
 import json
 import pandas as pd
-try:
-    import streamlit as st
-except Exception:
-    print("Streamlit is not installed in the current environment.\nInstall with: pip install streamlit plotly")
-    raise
+import streamlit as st
+import plotly.graph_objects as go
+import plotly.express as px
+from datetime import datetime, timedelta
 
-try:
-    import plotly.express as px
-    import plotly.graph_objects as go
-except Exception:
-    print("Plotly is not installed in the current environment.\nInstall with: pip install plotly")
-    raise
-from datetime import datetime
+st.set_page_config(page_title="TheBot Trading Dashboard", layout="wide", initial_sidebar_state="expanded")
+
+# ============ CUSTOM CSS ============
+st.markdown("""
+<style>
+    * { font-family: 'Segoe UI', sans-serif; }
+    body { background: linear-gradient(135deg, #0f0f1e 0%, #1a1a2e 100%); }
+    
+    [data-testid="stMetric"] {
+        background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+        padding: 20px;
+        border-radius: 12px;
+        border-left: 4px solid #ff006e;
+        box-shadow: 0 4px 20px rgba(0,0,0,0.3);
+    }
+    
+    .card {
+        background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+        padding: 24px;
+        border-radius: 16px;
+        border: 1px solid #2a2a4e;
+        box-shadow: 0 8px 32px rgba(0,0,0,0.3);
+        margin: 12px 0;
+    }
+    
+    .card-header {
+        color: #00d9ff;
+        font-size: 18px;
+        font-weight: 600;
+        margin-bottom: 16px;
+        border-bottom: 2px solid #ff006e;
+        padding-bottom: 12px;
+    }
+    
+    .metric-row {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+        gap: 16px;
+        margin: 12px 0;
+    }
+    
+    .metric-box {
+        background: rgba(255, 0, 110, 0.1);
+        padding: 16px;
+        border-radius: 10px;
+        border-left: 3px solid #ff006e;
+        text-align: center;
+    }
+    
+    .metric-label {
+        color: #888;
+        font-size: 12px;
+        text-transform: uppercase;
+        margin-bottom: 8px;
+    }
+    
+    .metric-value {
+        color: #00ff88;
+        font-size: 24px;
+        font-weight: 700;
+    }
+    
+    .metric-value.negative { color: #ff4444; }
+    .metric-value.positive { color: #00ff88; }
+    
+    .symbol-badge {
+        display: inline-block;
+        background: #ff006e;
+        color: white;
+        padding: 6px 12px;
+        border-radius: 20px;
+        font-size: 12px;
+        font-weight: 600;
+        margin: 4px;
+    }
+    
+    .signal-buy { color: #00ff88; font-weight: 600; }
+    .signal-sell { color: #ff4444; font-weight: 600; }
+    .signal-hold { color: #ffaa00; font-weight: 600; }
+    
+    h1 { color: #00d9ff; text-shadow: 0 0 10px rgba(0,217,255,0.3); margin-bottom: 24px; }
+    h2 { color: #00d9ff; margin-top: 24px; margin-bottom: 16px; }
+</style>
+""", unsafe_allow_html=True)
 
 BASE_DIR = os.path.dirname(__file__) or "."
 PERF_LOG = os.path.join(BASE_DIR, "performance_log.csv")
 BACKTEST_JSON = os.path.join(BASE_DIR, "backtest_results.json")
-
-st.set_page_config(page_title="TheBot Dashboard", layout="wide", initial_sidebar_state="expanded")
-st.markdown("""
-<style>
-    .big-metric { font-size: 2em; font-weight: bold; }
-    .status-live { color: #00ff00; font-weight: bold; }
-    .status-paused { color: #ffaa00; font-weight: bold; }
-</style>
-""", unsafe_allow_html=True)
-
-st.title("🤖 TheBot — Performance Dashboard")
-
-# Sidebar
-st.sidebar.header("📊 Dashboard Controls")
-use_perf = st.sidebar.checkbox("📝 Load performance_log.csv", value=True)
-use_backtest = st.sidebar.checkbox("📊 Load backtest_results.json", value=True)
-show_raw_data = st.sidebar.checkbox("Show Raw Data", value=False)
 
 @st.cache_data
 def load_perf_log(path):
@@ -60,11 +110,8 @@ def load_perf_log(path):
         if "timestamp" in df.columns:
             df["timestamp"] = pd.to_datetime(df["timestamp"])
         return df
-    except Exception:
-        try:
-            return pd.read_csv(path)
-        except Exception:
-            return pd.DataFrame()
+    except:
+        return pd.DataFrame()
 
 @st.cache_data
 def load_backtest(path):
@@ -73,143 +120,184 @@ def load_backtest(path):
     try:
         with open(path, "r", encoding="utf-8") as f:
             return json.load(f)
-    except Exception:
+    except:
         return None
 
-perf_df = load_perf_log(PERF_LOG) if use_perf else pd.DataFrame()
-backtest = load_backtest(BACKTEST_JSON) if use_backtest else None
+# Load data
+perf_df = load_perf_log(PERF_LOG)
+backtest = load_backtest(BACKTEST_JSON)
 
-# === TOP STATUS METRICS ===
+# ============ HEADER ============
+st.title("🤖 TheBot Trading Dashboard")
+st.markdown("---")
+
+# ============ SIDEBAR ============
+with st.sidebar:
+    st.header("⚙️ Controls")
+    refresh_rate = st.select_slider("Auto-refresh interval (seconds)", [5, 10, 30, 60], value=30)
+    show_details = st.checkbox("Show trade details", value=True)
+    show_backtest = st.checkbox("Show backtest metrics", value=True)
+    time_filter = st.selectbox("Time filter", ["All", "Today", "This Week", "This Month"])
+
+# ============ MAIN METRICS CARD ============
 if not perf_df.empty:
-    st.markdown("---")
-    latest_signal = perf_df.iloc[-1] if len(perf_df) > 0 else None
+    st.markdown('<div class="card">', unsafe_allow_html=True)
+    st.markdown('<div class="card-header">💰 Account Summary</div>', unsafe_allow_html=True)
+    
     total_pnl = float(perf_df["pnl"].fillna(0).sum()) if "pnl" in perf_df.columns else 0.0
     total_trades = len(perf_df[perf_df["signal"].isin(["BUY", "SELL"])]) if "signal" in perf_df.columns else 0
     win_count = len(perf_df[(perf_df["signal"].isin(["BUY", "SELL"])) & (perf_df["pnl"].fillna(0) > 0)]) if "pnl" in perf_df.columns else 0
+    balance = 10000.0 + total_pnl
     
-    metric_cols = st.columns(5)
+    col1, col2, col3, col4 = st.columns(4)
     
-    with metric_cols[0]:
-        pnl_color = "green" if total_pnl >= 0 else "red"
-        st.metric("💰 Total PnL", f"${total_pnl:,.2f}", delta=f"{'Profit' if total_pnl > 0 else 'Loss'}", delta_color="normal" if total_pnl >= 0 else "inverse")
+    with col1:
+        st.metric("Total Balance", f"${balance:,.2f}", f"${total_pnl:+,.2f}")
     
-    with metric_cols[1]:
-        st.metric("📊 Total Trades", total_trades)
+    with col2:
+        st.metric("Total Trades", total_trades, f"{win_count}W/{total_trades-win_count}L" if total_trades > 0 else "0")
     
-    with metric_cols[2]:
+    with col3:
         win_rate = (win_count / total_trades * 100) if total_trades > 0 else 0
-        st.metric("🎯 Win Rate", f"{win_rate:.1f}%", delta=f"{win_count}W / {total_trades-win_count}L")
+        st.metric("Win Rate", f"{win_rate:.1f}%", f"{win_count} wins")
     
-    with metric_cols[3]:
-        latest_time = latest_signal["timestamp"] if "timestamp" in latest_signal and pd.notna(latest_signal["timestamp"]) else "N/A"
-        time_str = str(latest_time)[-19:-5] if latest_time != "N/A" else "N/A"
-        st.metric("⏰ Last Signal", time_str)
+    with col4:
+        latest_time = perf_df.iloc[-1]["timestamp"] if "timestamp" in perf_df.columns else "N/A"
+        time_str = str(latest_time)[-19:-5] if pd.notna(latest_time) else "N/A"
+        st.metric("Last Signal", time_str, "")
     
-    with metric_cols[4]:
-        latest_sym = latest_signal["symbol"] if "symbol" in latest_signal else "N/A"
-        st.metric("📌 Last Symbol", latest_sym)
+    st.markdown('</div>', unsafe_allow_html=True)
+
+# ============ CHARTS ROW ============
+col_left, col_right = st.columns((1.5, 1))
+
+with col_left:
+    st.markdown('<div class="card">', unsafe_allow_html=True)
+    st.markdown('<div class="card-header">📈 Equity Curve</div>', unsafe_allow_html=True)
+    
+    if not perf_df.empty and "pnl" in perf_df.columns:
+        df = perf_df.copy().sort_values("timestamp")
+        df["pnl"] = pd.to_numeric(df["pnl"], errors="coerce").fillna(0.0)
+        df["equity"] = 10000.0 + df["pnl"].cumsum()
+        
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(
+            x=df["timestamp"], y=df["equity"],
+            fill='tozeroy', fillcolor='rgba(0,255,136,0.2)',
+            line=dict(color='#00ff88', width=3),
+            hovertemplate='<b>%{x|%H:%M:%S}</b><br>Equity: $%{y:,.0f}<extra></extra>'
+        ))
+        fig.update_layout(
+            xaxis_title="", yaxis_title="Equity ($)",
+            template="plotly_dark", hovermode='x unified',
+            height=400, margin=dict(l=40, r=20, t=20, b=20),
+            showlegend=False
+        )
+        fig.update_xaxes(showgrid=False)
+        fig.update_yaxes(showgrid=True, gridwidth=1, gridcolor='rgba(255,255,255,0.05)')
+        st.plotly_chart(fig, use_container_width=True)
+    else:
+        st.info("No equity data available")
+    
+    st.markdown('</div>', unsafe_allow_html=True)
+
+with col_right:
+    st.markdown('<div class="card">', unsafe_allow_html=True)
+    st.markdown('<div class="card-header">🎯 Signal Distribution</div>', unsafe_allow_html=True)
+    
+    if not perf_df.empty and "signal" in perf_df.columns:
+        signal_counts = perf_df["signal"].value_counts()
+        colors = {"BUY": "#00ff88", "SELL": "#ff4444", "HOLD": "#ffaa00"}
+        
+        fig = go.Figure(data=[go.Pie(
+            labels=signal_counts.index, 
+            values=signal_counts.values,
+            marker=dict(colors=[colors.get(s, "#666") for s in signal_counts.index]),
+            hole=0.3,
+            textinfo='label+percent',
+            hovertemplate='<b>%{label}</b><br>Count: %{value}<br>%{percent}<extra></extra>'
+        )])
+        fig.update_layout(template="plotly_dark", height=350, margin=dict(l=0, r=0, t=0, b=0))
+        st.plotly_chart(fig, use_container_width=True)
+    else:
+        st.info("No signals to display")
+    
+    st.markdown('</div>', unsafe_allow_html=True)
+
+# ============ POSITIONS & TRADES ============
+st.markdown('<div class="card">', unsafe_allow_html=True)
+st.markdown('<div class="card-header">📊 Recent Trades</div>', unsafe_allow_html=True)
+
+if not perf_df.empty:
+    df_display = perf_df.sort_values("timestamp", ascending=False).head(15).copy()
+    
+    if "timestamp" in df_display.columns:
+        df_display["Time"] = df_display["timestamp"].dt.strftime("%Y-%m-%d %H:%M:%S")
+    else:
+        df_display["Time"] = "N/A"
+    
+    # Build display table
+    display_cols = ["Time"]
+    if "symbol" in df_display.columns:
+        display_cols.append("symbol")
+    if "signal" in df_display.columns:
+        display_cols.append("signal")
+    if "pnl" in df_display.columns:
+        display_cols.append("pnl")
+    if "reason" in df_display.columns:
+        display_cols.append("reason")
+    
+    df_display = df_display[display_cols]
+    df_display = df_display.rename(columns={
+        "symbol": "Symbol",
+        "signal": "Signal",
+        "pnl": "P&L",
+        "reason": "Reason"
+    })
+    
+    st.dataframe(df_display, use_container_width=True, height=300, hide_index=True)
 else:
-    st.warning("⚠️ No performance data yet. Run TheBot to populate performance_log.csv")
+    st.info("No trade data available")
 
-st.markdown("---")
+st.markdown('</div>', unsafe_allow_html=True)
 
-# === MAIN CONTENT ===
-col1, col2 = st.columns((2, 1))
+# ============ SYMBOL BREAKDOWN ============
+st.markdown('<div class="card">', unsafe_allow_html=True)
+st.markdown('<div class="card-header">📍 Performance by Symbol</div>', unsafe_allow_html=True)
 
-with col1:
-    st.subheader("📈 Equity Curve & Performance")
-    
-    if not perf_df.empty:
-        df = perf_df.copy()
-        df = df.sort_values("timestamp")
-        
-        if "pnl" in df.columns:
-            df["pnl"] = pd.to_numeric(df["pnl"], errors="coerce").fillna(0.0)
-            df["equity"] = 10000.0 + df["pnl"].cumsum()
-            
-            # Equity curve with Plotly
-            fig_eq = go.Figure()
-            fig_eq.add_trace(go.Scatter(
-                x=df["timestamp"], y=df["equity"],
-                mode='lines+markers', name='Equity',
-                line=dict(color='#00ff00', width=2),
-                marker=dict(size=4),
-                fill='tozeroy', fillcolor='rgba(0,255,0,0.1)',
-                hovertemplate='<b>Time:</b> %{x}<br><b>Equity:</b> $%{y:,.2f}<extra></extra>'
-            ))
-            fig_eq.update_layout(
-                title="Account Equity Over Time",
-                xaxis_title="Time", yaxis_title="Equity ($)",
-                hovermode='x unified', template='plotly_dark',
-                height=400, margin=dict(l=50, r=50, t=40, b=40)
-            )
-            st.plotly_chart(fig_eq, use_container_width=True)
-        else:
-            st.info("No PnL values to display equity curve.")
-    else:
-        st.info("No performance log found.")
-
-    st.subheader("📋 Recent Signals & Trades")
-    if not perf_df.empty:
-        display_df = perf_df.sort_values("timestamp", ascending=False).head(25).copy()
-        
-        # Clean up display
-        if "timestamp" in display_df.columns:
-            display_df["timestamp"] = display_df["timestamp"].dt.strftime("%Y-%m-%d %H:%M:%S")
-        
-        st.dataframe(display_df, use_container_width=True, height=400)
-    else:
-        st.info("No signals to display.")
-
-with col2:
-    st.subheader("📊 Trading Summary")
-    
-    if not perf_df.empty:
-        total = len(perf_df)
-        buys = len(perf_df[perf_df["signal"] == "BUY"]) if "signal" in perf_df.columns else 0
-        sells = len(perf_df[perf_df["signal"] == "SELL"]) if "signal" in perf_df.columns else 0
-        holds = len(perf_df[perf_df["signal"] == "HOLD"]) if "signal" in perf_df.columns else 0
-        
-        st.metric("🔵 Total Signals", total)
-        st.metric("📈 Buy Signals", buys)
-        st.metric("📉 Sell Signals", sells)
-        st.metric("⏸️ Hold Signals", holds)
-        
-        if "pnl" in perf_df.columns:
-            total_pnl = float(perf_df["pnl"].fillna(0).sum())
-            avg_pnl = total_pnl / total if total > 0 else 0
-            st.metric("Avg PnL per Signal", f"${avg_pnl:.2f}")
-    
-    st.subheader("📈 Backtest Summary")
-    if backtest is None:
-        st.info("No backtest results found. Run `backtest_engine.py --output backtest_results.json` to generate.")
-    else:
-        metrics = backtest.get("metrics", {})
-        if metrics:
-            st.json(metrics)
-        else:
-            st.info("No backtest metrics available.")
-
-st.markdown("---")
-
-# === SIGNAL DISTRIBUTION ===
-st.subheader("📊 Signal Distribution by Symbol")
 if not perf_df.empty and "symbol" in perf_df.columns:
-    signal_dist = perf_df.groupby(["symbol", "signal"]).size().reset_index(name="count")
-    fig_dist = px.bar(signal_dist, x="symbol", y="count", color="signal", barmode="group",
-                      title="Signals by Symbol", template="plotly_dark")
-    st.plotly_chart(fig_dist, use_container_width=True)
+    symbol_stats = perf_df.groupby("symbol").agg({
+        "pnl": ["sum", "count"],
+        "signal": lambda x: (x == "BUY").sum()
+    }).round(2)
+    symbol_stats.columns = ["Total PnL", "Trades", "Buys"]
+    symbol_stats["Win Rate"] = (symbol_stats["Buys"] / symbol_stats["Trades"] * 100).round(1)
+    
+    st.dataframe(symbol_stats, use_container_width=True)
+else:
+    st.info("No symbol data available")
 
+st.markdown('</div>', unsafe_allow_html=True)
+
+# ============ BACKTEST SUMMARY ============
+if show_backtest and backtest:
+    st.markdown('<div class="card">', unsafe_allow_html=True)
+    st.markdown('<div class="card-header">📈 Backtest Summary</div>', unsafe_allow_html=True)
+    
+    metrics = backtest.get("metrics", {})
+    if metrics:
+        col1, col2, col3, col4 = st.columns(4)
+        with col1:
+            st.metric("Total Return", f"{metrics.get('total_return_pct', 0):.2f}%")
+        with col2:
+            st.metric("Sharpe Ratio", f"{metrics.get('sharpe_ratio', 0):.2f}")
+        with col3:
+            st.metric("Max Drawdown", f"{metrics.get('max_drawdown_pct', 0):.2f}%")
+        with col4:
+            st.metric("Trades", metrics.get('total_trades', 0))
+    
+    st.markdown('</div>', unsafe_allow_html=True)
+
+# ============ FOOTER ============
 st.markdown("---")
-
-# === RAW DATA ===
-if show_raw_data:
-    st.subheader("🔍 Raw Performance Data")
-    if not perf_df.empty:
-        st.write(perf_df)
-    st.subheader("🔍 Raw Backtest Data")
-    if backtest:
-        st.json(backtest)
-
-st.markdown("---")
-st.caption("TheBot Dashboard — Real-time performance monitoring | Last updated: " + datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+st.caption(f"Last updated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} | TheBot v1.0")
