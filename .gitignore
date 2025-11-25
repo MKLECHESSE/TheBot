@@ -1,0 +1,13 @@
+.venv/
+__pycache__/
+*.pyc
+.env
+.env.*
+*.log
+proposed_changes.json
+bot.log
+*.sqlite
+.vscode/
+.DS_Store
+.backtest_results.json
+performance_log.csv

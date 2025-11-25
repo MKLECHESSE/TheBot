@@ -1,0 +1,124 @@
+# ============================================================
+# Trading Bot Configuration
+# ============================================================
+
+# Market symbols to trade
+symbols:
+  # Forex Majors
+  - "EURUSD"
+  - "GBPUSD"
+  - "USDJPY"
+  - "USDCHF"
+  - "AUDUSD"
+  - "NZDUSD"
+  - "USDCAD"
+
+  # Forex Minors & Crosses
+  - "EURGBP"
+  - "EURAUD"
+  - "EURJPY"
+  - "GBPJPY"
+  - "AUDJPY"
+
+  # Commodities
+  - "XAUUSD"      # Gold
+
+  # Global Indices
+  - "US30"        # Dow Jones
+  - "SPX500"      # S&P 500
+  - "NAS100"      # Nasdaq
+
+  # Crypto (if supported by broker)
+  - "BTCUSD"
+
+  # Synthetic Indices (Deriv)
+  - "FX VOL 20"
+  - "FX VOL 40"
+  - "Volatility 10 Index"
+  - "Volatility 25 Index"
+  - "Volatility 50 Index"
+  - "Volatility 75 Index"
+  - "Volatility 100 Index"
+  - "Volatility 10 (1s) Index"
+  - "Volatility 25 (1s) Index"
+  - "Volatility 50 (1s) Index"
+  - "Volatility 75 (1s) Index"
+  - "Volatility 100 (1s) Index"
+  - "Boom 1000 Index"
+  - "Crash 1000 Index"
+  - "Boom 500 Index"
+  - "Crash 500 Index"
+  - "Boom 300 Index"
+  - "Crash 300 Index"
+  - "Step Index"
+  - "Range Break 100 Index"
+  - "Range Break 200 Index"
+  - "Volatility 150 (1s) Index"
+  - "Volatility 250 (1s) Index"
+  - "Jump 10 Index"
+  - "Jump 25 Index"
+  - "Jump 50 Index"
+  - "Jump 75 Index"
+  - "Jump 100 Index"
+
+# ============================================================
+# Risk & Trade Settings
+# ============================================================
+
+max_loss_percentage: 2
+live_trading: true
+symbol_delay: 2
+check_interval: 60
+risk_percentage: 1
+atr_sl_multiplier: 2
+atr_tp_multiplier: 4
+
+trailing:
+  multiplier: 1.5
+  breakeven_multiplier: 1.0
+
+position_management:
+  enabled: false
+  auto_modify: false
+  breakeven_buffer_points: 1.0
+  trailing_min_profit_atr: 1.0
+
+email:
+  enabled: false
+  from: ""
+  to: ""
+  password: ""
+
+telegram:
+  enabled: false
+  bot_token: ""
+  chat_id: ""
+
+profiles:
+  classic:
+    rsi:
+      period: 14
+      buy_threshold: 30
+      sell_threshold: 70
+    bollinger:
+      period: 20
+      std_dev: 2
+    macd:
+      fast_period: 12
+      slow_period: 26
+      signal_period: 9
+    moving_averages:
+      ema_fast: 9
+      ema_slow: 21
+    adx:
+      period: 14
+      min_strength: 25
+    atr:
+      period: 14
+      min_volatility_factor: 0.5
+
+symbols:
+  classic:
+    - "EURUSD"
+    - "GBPUSD"
+    - "USDJPY"

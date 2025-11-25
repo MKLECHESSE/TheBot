@@ -1,0 +1,12 @@
+MetaTrader5
+pandas
+numpy
+pyyaml
+python-dotenv
+requests
+colorama
+matplotlib
+ta
+pytest
+streamlit
+plotly
