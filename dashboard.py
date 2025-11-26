@@ -313,7 +313,7 @@ with st.expander("Send Telegram / Email Alert"):
 with st.expander("Generate proposed action (download JSON)"):
     st.write("Create a JSON file that can be placed in your bot's project folder as `proposed_changes.json` to instruct the bot to execute actions.")
     sample = [{
-        "ts": datetime.utcnow().isoformat(),
+        "ts": datetime.now(timezone.utc).isoformat(),
         "action": "order_send",
         "symbol": "EURUSD",
         "signal": "BUY",
@@ -339,7 +339,7 @@ with st.expander("Generate proposed action (download JSON)"):
             if p_action == "modify_sl" and (not p_new_sl or pos_i is None):
                 st.error("Provide numeric position and new_sl for modify_sl")
             else:
-                obj = {"ts": datetime.utcnow().isoformat(), "action": p_action, "position": pos_i}
+                obj = {"ts": datetime.now(timezone.utc).isoformat(), "action": p_action, "position": pos_i}
                 if p_action == "modify_sl":
                     obj["new_sl"] = float(p_new_sl)
                 st.json(obj)

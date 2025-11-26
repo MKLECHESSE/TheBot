@@ -11,7 +11,7 @@ import time
 import json
 import logging
 import argparse
-from datetime import datetime
+from datetime import datetime, timezone
 
 import yaml
 from dotenv import load_dotenv
@@ -47,11 +47,20 @@ with open(os.path.join(BASE_DIR, "config.yaml"), "r", encoding="utf-8") as f:
 parser = argparse.ArgumentParser(description="TheBot starter trading bot")
 parser.add_argument("--dry-run", action="store_true", help="Force simulation mode and write proposed changes to file")
 parser.add_argument("--once", action="store_true", help="Run a single cycle and exit")
+parser.add_argument("--prefer-market-watch", action="store_true", help="Prefer mapping configured symbols to Market Watch names at runtime")
 args = parser.parse_args()
 DRY_RUN = bool(args.dry_run)
 ONCE = bool(args.once)
+PREFER_MARKET_WATCH_FLAG = bool(args.prefer_market_watch)
 
 LIVE_TRADING = config.get("live_trading", False)
+DEMO_MODE = config.get("demo_mode", False)
+PAPER_TRADE = config.get("paper_trade", False)
+DEMO_CREDENTIALS = config.get("demo_credentials", {})
+USE_MARKET_WATCH = config.get("use_market_watch", True)
+SYMBOL_ALIASES = config.get("symbol_aliases", {})
+if PREFER_MARKET_WATCH_FLAG:
+    USE_MARKET_WATCH = True
 DELAY = config.get("symbol_delay", 2)
 CHECK_INTERVAL = config.get("check_interval", 60)
 
@@ -73,14 +82,65 @@ def ensure_mt5_init():
     bot will run in simulation mode.
     """
     if mt5 is None:
-        logging.warning("MT5 package not available; running in simulation mode.")
+        logging.warning("MT5 package not available; running in simulation/paper mode.")
         return False
-    ok = mt5.initialize()
+
+    try:
+        # Optionally allow the user to provide an explicit MT5 terminal path in config
+        mt5_path = config.get("mt5_terminal_path") or os.getenv("MT5_TERMINAL_PATH")
+        if mt5_path:
+            ok = mt5.initialize(mt5_path)
+        else:
+            ok = mt5.initialize()
+    except Exception as e:
+        logging.exception("MT5 initialize() raised: %s", e)
+        return False
+
     if not ok:
-        logging.error("MT5 initialize() returned False; running in simulation mode.")
+        logging.error("MT5 initialize() returned False; running in simulation/paper mode.")
         return False
+
+    # If demo mode is requested, attempt to login using provided credentials
+    if DEMO_MODE:
+        login = DEMO_CREDENTIALS.get("login")
+        password = DEMO_CREDENTIALS.get("password")
+        server = DEMO_CREDENTIALS.get("server")
+        try:
+                if login:
+                    try:
+                        login_val = int(login)
+                    except Exception:
+                        login_val = login
+                    # mt5.login signature: mt5.login(login, password=None, server=None)
+                    logged = mt5.login(login_val, password, server) if server else mt5.login(login_val, password)
+                    if not logged:
+                        logging.warning("MT5 demo login attempt failed for %s (terminal may already be logged in). Continuing.", login)
+                    else:
+                        logging.info("Logged into MT5 demo account %s", login)
+        except Exception as e:
+            logging.warning("Error during MT5 demo login: %s (continuing)", e)
     logging.info("MT5 initialized")
     return True
+
+
+def ensure_mt5_connection():
+    """Check if MT5 is still connected. Attempt to reconnect if not.
+    
+    Returns True if MT5 is connected/ready, False otherwise.
+    """
+    if mt5 is None:
+        return False
+    try:
+        # Simple test: try to get account info
+        acc = mt5.account_info()
+        if acc is not None:
+            return True
+    except Exception:
+        pass
+    
+    # Connection lost; attempt to reinitialize
+    logging.warning("MT5 connection lost; attempting to reconnect...")
+    return ensure_mt5_init()
 
 
 # ============================================================
@@ -94,12 +154,33 @@ def fetch_mt5_rates(symbol, timeframe, n=500, mt5_ready=False):
     indicator code during local tests.
     """
     if mt5_ready and mt5 is not None:
-        rates = mt5.copy_rates_from_pos(symbol, timeframe, 0, n)
-        if rates is None or len(rates) == 0:
-            raise RuntimeError(f"No rates for {symbol}")
-        df = pd.DataFrame(rates)
-        df["time"] = pd.to_datetime(df["time"], unit="s")
-        return df
+        # ensure the symbol exists / is visible
+        try:
+            sym = mt5.symbol_info(symbol)
+            if sym is None:
+                # attempt to find a close match in available symbols
+                all_syms = mt5.symbols_get()
+                candidates = [s.name for s in all_syms if symbol.lower() in s.name.lower()]
+                if candidates:
+                    logging.info("Symbol %s not found, using closest match %s", symbol, candidates[0])
+                    symbol = candidates[0]
+                    sym = mt5.symbol_info(symbol)
+                else:
+                    # no matching symbol; expose available samples for debugging
+                    sample = ','.join([s.name for s in (all_syms[:20] or [])])
+                    raise RuntimeError(f"No rates for {symbol}; available sample symbols: {sample}")
+
+            if not sym.visible:
+                mt5.symbol_select(symbol, True)
+
+            rates = mt5.copy_rates_from_pos(symbol, timeframe, 0, n)
+            if rates is None or len(rates) == 0:
+                raise RuntimeError(f"No rates for {symbol}")
+            df = pd.DataFrame(rates)
+            df["time"] = pd.to_datetime(df["time"], unit="s")
+            return df
+        except Exception:
+            raise
 
     # simulation fallback: build synthetic series
     now = int(time.time())
@@ -369,7 +450,7 @@ def execute_trade(symbol, signal, ind, extra_comment="AutoBot"):
         if not config.get("live_trading", False) or DRY_RUN:
             logging.info("[SIM] live_trading disabled or dry-run; would execute %s %s", signal, symbol)
             proposed = {
-                "ts": datetime.utcnow().isoformat(),
+                "ts": datetime.now(timezone.utc).isoformat(),
                 "action": "order_send",
                 "symbol": symbol,
                 "signal": signal,
@@ -381,6 +462,28 @@ def execute_trade(symbol, signal, ind, extra_comment="AutoBot"):
             }
             save_proposed_change(proposed)
             return {"sim": True}
+
+        # If live_trading requested but MT5 not ready, support paper trading simulation
+        if (mt5 is None) and config.get("live_trading", False):
+            if config.get("paper_trade", False):
+                # Simulate a filled order locally
+                logging.info("[PAPER] Simulating order for %s %s", signal, symbol)
+                fake_result = {
+                    "sim": True,
+                    "order": int(time.time()),
+                    "symbol": symbol,
+                    "signal": signal,
+                    "price": None,
+                    "sl": None,
+                    "tp": None,
+                    "lot": None,
+                }
+                # record as executed proposed change for auditing
+                save_proposed_change({"ts": datetime.now(timezone.utc).isoformat(), "action": "simulated_execution", "orig": fake_result})
+                return fake_result
+            else:
+                logging.error("MT5 module not available; cannot execute trades")
+                return None
 
         if mt5 is None:
             logging.error("MT5 module not available; cannot execute trades")
@@ -432,15 +535,53 @@ def execute_trade(symbol, signal, ind, extra_comment="AutoBot"):
             "type_filling": mt5.ORDER_FILLING_RETURN,
         }
 
+        logging.info("Sending %s order for %s: entry=%.5f, SL=%.5f, TP=%.5f, lot=%.2f", signal, symbol, price, sl, tp, lot)
         result = mt5.order_send(request)
-        logging.info("order_send result: %s", result)
-        return result
+        
+        # Check result and log confirmation
+        if result is None:
+            logging.error("❌ order_send() returned None for %s %s", signal, symbol)
+            return None
+        
+        if result.retcode == mt5.TRADE_RETCODE_DONE:
+            logging.info("✅ Trade CONFIRMED: %s %s | Order #%d | Entry: %.5f | SL: %.5f | TP: %.5f | Lot: %.2f",
+                         signal, symbol, result.order, price, sl, tp, lot)
+            # Send alert notification
+            msg = f"✅ Trade Executed!\n{signal} {symbol}\nEntry: {price:.5f}\nSL: {sl:.5f}\nTP: {tp:.5f}\nOrder #{result.order}"
+            send_telegram_alert(msg)
+            send_email_alert(f"Trade Executed: {signal} {symbol}", msg)
+            return result
+        else:
+            logging.error("❌ Trade FAILED: %s %s | Error Code: %d | Message: %s", signal, symbol, result.retcode, result.comment if hasattr(result, 'comment') else "Unknown error")
+            error_msg = f"Trade FAILED: {signal} {symbol}\nError: {result.comment if hasattr(result, 'comment') else 'Unknown error'}\nCode: {result.retcode}"
+            send_telegram_alert(f"❌ Trade Failed: {signal} {symbol}")
+            send_email_alert(f"Trade Failed: {signal} {symbol}", error_msg)
+            return result
     except Exception as e:
         logging.exception("execute_trade failed: %s", e)
         return None
 
 
-def manage_open_positions():
+def verify_trade_execution(symbol, signal):
+    """Verify that a trade was actually executed by checking open positions."""
+    if mt5 is None:
+        return None
+    try:
+        positions = mt5.positions_get(symbol=symbol)
+        if positions is not None and len(positions) > 0:
+            latest_pos = positions[-1]  # most recent position
+            logging.info("✅ Position verified for %s: Ticket=%d, Type=%s, Volume=%f, OpenPrice=%.5f",
+                        symbol, latest_pos.ticket, latest_pos.type, latest_pos.volume, latest_pos.price_open)
+            return latest_pos
+        else:
+            logging.warning("⚠️ No open position found for %s after trade execution", symbol)
+            return None
+    except Exception as e:
+        logging.error("Error verifying trade for %s: %s", symbol, e)
+        return None
+
+
+
     """Non-destructive position manager.
 
     This function enumerates open positions and logs suggested trailing stop and
@@ -502,7 +643,7 @@ def manage_open_positions():
                                         if action is not None:
                                             req = {"action": action, "position": int(pos.ticket), "sl": float(new_sl), "tp": float(pos.tp)}
                                             if DRY_RUN:
-                                                save_proposed_change({"ts": datetime.utcnow().isoformat(), "action": "modify_sl", "symbol": symbol, "position": int(pos.ticket), "new_sl": float(new_sl)})
+                                                save_proposed_change({"ts": datetime.now(timezone.utc).isoformat(), "action": "modify_sl", "symbol": symbol, "position": int(pos.ticket), "new_sl": float(new_sl)})
                                             else:
                                                 mt5.order_send(req)
                                         else:
@@ -520,7 +661,7 @@ def manage_open_positions():
                                         if action is not None:
                                             req = {"action": action, "position": int(pos.ticket), "sl": float(new_sl), "tp": float(pos.tp)}
                                             if DRY_RUN:
-                                                save_proposed_change({"ts": datetime.utcnow().isoformat(), "action": "modify_sl", "symbol": symbol, "position": int(pos.ticket), "new_sl": float(new_sl)})
+                                                save_proposed_change({"ts": datetime.now(timezone.utc).isoformat(), "action": "modify_sl", "symbol": symbol, "position": int(pos.ticket), "new_sl": float(new_sl)})
                                             else:
                                                 mt5.order_send(req)
                                         else:
@@ -540,7 +681,7 @@ def manage_open_positions():
                                         if action is not None:
                                             req = {"action": action, "position": int(pos.ticket), "sl": float(new_sl), "tp": float(pos.tp)}
                                             if DRY_RUN:
-                                                save_proposed_change({"ts": datetime.utcnow().isoformat(), "action": "modify_sl", "symbol": symbol, "position": int(pos.ticket), "new_sl": float(new_sl)})
+                                                save_proposed_change({"ts": datetime.now(timezone.utc).isoformat(), "action": "modify_sl", "symbol": symbol, "position": int(pos.ticket), "new_sl": float(new_sl)})
                                             else:
                                                 mt5.order_send(req)
                                         else:
@@ -620,7 +761,7 @@ def process_proposed_changes():
                     execute_trade(sym, sig, ind, extra_comment=item.get("comment", "proposed_action"))
                     logging.info("Executed proposed order for %s", sym)
                 else:
-                    save_proposed_change({"ts": datetime.utcnow().isoformat(), "action": "simulated_execution", "source": "process_proposed_changes", "orig": item})
+                    save_proposed_change({"ts": datetime.now(timezone.utc).isoformat(), "action": "simulated_execution", "source": "process_proposed_changes", "orig": item})
                 executed.append(item)
             elif act == "modify_sl":
                 # attempt to modify SL for a position (best-effort)
@@ -694,7 +835,7 @@ def init_perf_log():
 def append_perf(symbol, profile_name, signal, reason, indicators=None):
     PERF_LOG = init_perf_log()
     row = {
-        "timestamp": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"),
+        "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"),
         "symbol": symbol,
         "profile": profile_name,
         "signal": signal,
@@ -707,15 +848,116 @@ def append_perf(symbol, profile_name, signal, reason, indicators=None):
 
 def run_starter_loop():
     mt5_ready = ensure_mt5_init()
-    if not mt5_ready:
+    # If live_trading is requested but MT5 initialization failed, allow running when
+    # paper_trade is enabled (local simulation of execution). Otherwise exit.
+    if not mt5_ready and config.get("live_trading", False) and not config.get("paper_trade", False):
         logging.error("MT5 is required for live_trading. Exiting.")
         print("MT5 is required for live_trading. Exiting.")
         return
+    # When connected to MT5, check that configured symbols exist in Market Watch
+    symbol_map = {s: s for s in SYMBOLS_CLASSIC}
+    if mt5_ready:
+        try:
+            all_syms = mt5.symbols_get()
+            available_names = [s.name for s in all_syms]
+        except Exception:
+            available_names = []
+
+        missing = []
+        suggestions = {}
+        # apply any manual aliases first
+        for logical, actual in SYMBOL_ALIASES.items():
+            if logical in symbol_map:
+                symbol_map[logical] = actual
+
+        # if configured to prefer Market Watch, attempt to map logical names to available names
+        if USE_MARKET_WATCH:
+            for s in SYMBOLS_CLASSIC:
+                candidates = []
+                mapped = symbol_map.get(s, s)
+                if mapped in available_names:
+                    # already present, nothing to do
+                    continue
+
+                # try direct case-insensitive match
+                candidates = [n for n in available_names if n.lower() == s.lower()]
+                if not candidates:
+                    # try contains
+                    candidates = [n for n in available_names if s.lower() in n.lower()]
+
+                # try common broker suffixes (EURUSD.m, EURUSD.micro, EURUSD-f, etc.)
+                if not candidates:
+                    suffixes = ['.micro','-micro','_micro','.m','-m','_m','.f','-f','_f','.fx','-fx','_fx']
+                    for suf in suffixes:
+                        target = (s + suf).lower()
+                        found = [n for n in available_names if n.lower() == target]
+                        if found:
+                            candidates = found
+                            break
+
+                # try base/quote token matching for 6-letter symbols
+                if not candidates and len(s) == 6:
+                    base = s[0:3]
+                    quote = s[3:6]
+                    candidates = [n for n in available_names if base.lower() in n.lower() and quote.lower() in n.lower()]
+
+                if candidates:
+                    symbol_map[s] = candidates[0]
+                    suggestions[s] = candidates[:5]
+                else:
+                    missing.append(s)
+
+            # If we made mappings, optionally write them back into config.yaml to ease testing
+            try:
+                mapped_list = [symbol_map.get(s, s) for s in SYMBOLS_CLASSIC]
+                if mapped_list != SYMBOLS_CLASSIC:
+                    cfg_path = os.path.join(BASE_DIR, "config.yaml")
+                    bak_path = cfg_path + ".bak"
+                    try:
+                        if not os.path.exists(bak_path):
+                            import shutil
+                            shutil.copy2(cfg_path, bak_path)
+                    except Exception:
+                        pass
+                    try:
+                        with open(cfg_path, "r", encoding="utf-8") as f:
+                            cur = yaml.safe_load(f) or {}
+                        if "symbols" not in cur:
+                            cur["symbols"] = {}
+                        cur["symbols"]["classic"] = mapped_list
+                        with open(cfg_path, "w", encoding="utf-8") as f:
+                            yaml.safe_dump(cur, f, sort_keys=False, allow_unicode=True)
+                        logging.info("Wrote mapped Market Watch symbols back to config.yaml (backup created at %s)", bak_path)
+                    except Exception:
+                        logging.exception("Failed to write mapped symbols back to config.yaml")
+            except Exception:
+                pass
+
+        if missing:
+            logging.warning("Configured symbols not present in MT5 Market Watch: %s", missing)
+            for sym in missing:
+                cand = suggestions.get(sym, [])
+                if cand:
+                    logging.warning(" -> %s: mapped to %s (close matches: %s)", sym, symbol_map.get(sym), cand)
+                else:
+                    logging.warning(" -> %s: no close matches found. Add it in MT5 Market Watch (right-click Market Watch -> Symbols -> find and Show).", sym)
+            logging.warning("Tip: In MT5 open Market Watch (Ctrl+M), right-click -> Symbols, locate the instrument and select 'Show' to add it to Market Watch.")
+        else:
+            logging.info("All configured symbols are present in MT5 Market Watch or mapped to available names.")
     profile = PROFILE_CLASSIC
-    symbols = SYMBOLS_CLASSIC
+    # Use mapped symbols for runtime (preserve order)
+    symbols = [symbol_map.get(s, s) for s in SYMBOLS_CLASSIC]
+    logging.info("Using symbols for runtime (logical->market): %s", {s: symbol_map.get(s, s) for s in SYMBOLS_CLASSIC})
     logging.info("Starting starter bot; live_trading=%s symbols=%s", LIVE_TRADING, symbols)
     try:
         while True:
+            # Check if MT5 connection is still alive (and reconnect if needed)
+            if mt5_ready:
+                mt5_ready = ensure_mt5_connection()
+                if not mt5_ready and LIVE_TRADING and not PAPER_TRADE:
+                    logging.error("MT5 connection lost and cannot recover; exiting.")
+                    break
+            
             for s in symbols:
                 try:
                     sig, reason, ind = analyze_symbol(s, profile, mt5_ready=mt5_ready)
@@ -728,7 +970,9 @@ def run_starter_loop():
                         # Execute trade if live_trading enabled
                         if config.get("live_trading", False):
                             res = execute_trade(s, sig, ind)
-                            logging.info("Execution result: %s", res)
+                            if res and not res.get("sim"):
+                                # Verify the trade was executed
+                                verify_trade_execution(s, sig)
                     time.sleep(DELAY)
                 except KeyboardInterrupt:
                     raise

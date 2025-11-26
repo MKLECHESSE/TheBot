@@ -344,7 +344,7 @@ def run_backtest(csv_file, profile_name, output_file=None):
     result = {
         "csv_file": csv_file,
         "profile": profile_name,
-        "backtest_date": datetime.utcnow().isoformat(),
+        "backtest_date": datetime.now(timezone.utc).isoformat(),
         "metrics": metrics,
         "trades": trades[:50],  # first 50 trades for brevity
         "total_trades_count": len(trades)

@@ -91,7 +91,7 @@ def webhook():
 
     # timestamp each item and append
     for it in items:
-        it.setdefault("ts", datetime.utcnow().isoformat())
+        it.setdefault("ts", datetime.now(timezone.utc).isoformat())
 
     try:
         append_proposed(items)

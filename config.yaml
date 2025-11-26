@@ -67,6 +67,19 @@ symbols:
 
 max_loss_percentage: 2
 live_trading: true
+# Demo mode: when true the bot will attempt to login to a broker demo account
+# using credentials under `demo_credentials`. This allows the bot to place
+# real demo orders (acts like a live account but on a demo server).
+demo_mode: false
+# Paper trade: when true the bot will simulate executions locally even when
+# `live_trading` is true and MT5 is not available. Useful for testing on a
+# machine without MetaTrader installed.
+paper_trade: true
+# Demo credentials (fill when demo_mode: true). Example:
+demo_credentials:
+  login: "19509165"
+  password: "your_demo_password"
+  server: "DemoServerName"
 symbol_delay: 2
 check_interval: 60
 risk_percentage: 1
@@ -119,6 +132,6 @@ profiles:
 
 symbols:
   classic:
-    - "EURUSD"
-    - "GBPUSD"
-    - "USDJPY"
+    - "FX Vol 20"
+    - "FX Vol 40"
+    - "FX Vol 60"
