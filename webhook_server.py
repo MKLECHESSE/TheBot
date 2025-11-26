@@ -30,7 +30,7 @@ import hashlib
 import json
 import argparse
 from flask import Flask, request, jsonify
-from datetime import datetime
+from datetime import datetime, timezone
 
 BASE_DIR = os.path.dirname(__file__) or "."
 APP = Flask(__name__)
