@@ -318,6 +318,68 @@ def analyze_symbol(symbol, profile, mt5_ready=False):
     return signal, "m15_signal", ind_m15
 
 
+def analyze_symbol_scalp(symbol, profile, mt5_ready=False):
+    """Analyze a symbol using M1/M5 scalping strategy with tight stops.
+
+    Scalping strategy:
+    - Uses M1 (1-minute) and M5 (5-minute) timeframes for rapid entry/exit
+    - Tighter RSI bands (RSI < 30 for BUY, RSI > 70 for SELL) for quicker signals
+    - Requires ADX > min_strength but less strict than standard trading
+    - Quick profit-taking: expects 5-15 pips profit before exit
+
+    Returns (signal, reason, indicators)
+    """
+    try:
+        # Fetch M1 for entry confirmation
+        df_m1 = fetch_mt5_rates(symbol, getattr(mt5, "TIMEFRAME_M1", 1), n=100, mt5_ready=mt5_ready)
+    except Exception as e:
+        logging.error("Failed to fetch M1 rates for scalp %s: %s", symbol, e)
+        return "HOLD", "scalp_fetch_error", {}
+
+    if df_m1 is None or df_m1.empty:
+        return "HOLD", "scalp_no_data", {}
+
+    ind_m1 = calculate_indicators_ta(df_m1, profile)
+
+    # Scalping: allow lower ADX (more volatility acceptable for quick trades)
+    min_adx_scalp = max(10, profile.get("adx", {}).get("min_strength", 0) - 5)
+    if ind_m1.get("adx", 0.0) < min_adx_scalp:
+        return "HOLD", "scalp_adx_low", ind_m1
+
+    # Tight RSI thresholds for scalping (more reactive)
+    rsi_scalp_buy = 25
+    rsi_scalp_sell = 75
+    macd_scalp = ind_m1.get("macd_hist", 0)
+    rsi_scalp = ind_m1.get("rsi", 50)
+
+    # Entry signals: stricter MACD + RSI combo for confirmed direction
+    buy = macd_scalp > 0 and rsi_scalp <= rsi_scalp_buy
+    sell = macd_scalp < 0 and rsi_scalp >= rsi_scalp_sell
+
+    signal = "HOLD"
+    if buy:
+        signal = "BUY"
+    elif sell:
+        signal = "SELL"
+
+    # Scalping also checks M5 for general trend (avoid counter-trend scalps)
+    try:
+        df_m5 = fetch_mt5_rates(symbol, getattr(mt5, "TIMEFRAME_M5", 5), n=50, mt5_ready=mt5_ready)
+        if df_m5 is not None and not df_m5.empty:
+            ind_m5 = calculate_indicators_ta(df_m5, profile)
+            ema_fast_m5 = ind_m5.get("ema_fast", 0)
+            ema_slow_m5 = ind_m5.get("ema_slow", 0)
+            # If M5 trend opposes M1 signal, reduce confidence but allow if strong M1 signal
+            if signal == "BUY" and ema_fast_m5 < ema_slow_m5:
+                return "HOLD", "scalp_m5_mismatch_buy", ind_m1
+            if signal == "SELL" and ema_fast_m5 > ema_slow_m5:
+                return "HOLD", "scalp_m5_mismatch_sell", ind_m1
+    except Exception:
+        pass
+
+    return signal, "scalp_m1_signal", ind_m1
+
+
 def generate_prediction(indicators, df_latest=None, profile=None):
     """Generate a simple heuristic prediction from indicators.
 
@@ -693,12 +755,13 @@ def send_mt5_journal_alert(title, message):
     return False
 
 
-def execute_trade(symbol, signal, ind, extra_comment="AutoBot"):
+def execute_trade(symbol, signal, ind, extra_comment="AutoBot", is_scalp=False):
     """Execute a market trade via MT5.
 
     - Uses ATR from `ind` to compute SL/TP distances (multipliers from config).
     - Computes lot size via `calculate_lot_from_risk()`.
     - Gated by `live_trading` in config: if false, logs simulation only.
+    - If `is_scalp=True`, applies scalping params: tighter stops, micro-lot multiplier, profit target in pips.
     """
     try:
         if not config.get("live_trading", False) or DRY_RUN:
@@ -713,6 +776,7 @@ def execute_trade(symbol, signal, ind, extra_comment="AutoBot"):
                 "tp": None,
                 "lot": None,
                 "indicators": ind,
+                "is_scalp": is_scalp,
             }
             save_proposed_change(proposed)
             return {"sim": True}
@@ -721,7 +785,7 @@ def execute_trade(symbol, signal, ind, extra_comment="AutoBot"):
         if (mt5 is None) and config.get("live_trading", False):
             if config.get("paper_trade", False):
                 # Simulate a filled order locally
-                logging.info("[PAPER] Simulating order for %s %s", signal, symbol)
+                logging.info("[PAPER] Simulating order for %s %s%s", signal, symbol, " (SCALP)" if is_scalp else "")
                 fake_result = {
                     "sim": True,
                     "order": int(time.time()),
@@ -731,6 +795,7 @@ def execute_trade(symbol, signal, ind, extra_comment="AutoBot"):
                     "sl": None,
                     "tp": None,
                     "lot": None,
+                    "is_scalp": is_scalp,
                 }
                 # record as executed proposed change for auditing
                 save_proposed_change({"ts": datetime.now(timezone.utc).isoformat(), "action": "simulated_execution", "orig": fake_result})
@@ -756,24 +821,49 @@ def execute_trade(symbol, signal, ind, extra_comment="AutoBot"):
             return None
 
         atr = float(ind.get("atr", 0.0))
-        sl_mult = config.get("atr_sl_multiplier", 2)
-        tp_mult = config.get("atr_tp_multiplier", 4)
+        
+        # Scalping: override ATR multipliers with tighter values
+        if is_scalp:
+            # Use minimum profit pips and tighter SL multiplier
+            scalp_params = config.get("scalping_params", {})
+            min_profit_pips = scalp_params.get("min_profit_pips", 5)
+            sl_mult = max(1.0, atr / max(atr, 0.0001) * 0.5)  # tighter SL relative to ATR
+            tp_points = min_profit_pips
+        else:
+            sl_mult = config.get("atr_sl_multiplier", 2)
+            tp_mult = config.get("atr_tp_multiplier", 4)
+            tp_points = None
 
         if signal == "BUY":
             price = float(tick.ask)
             sl = price - atr * sl_mult
-            tp = price + atr * tp_mult
+            if tp_points is not None:
+                point = sym.point
+                tp = price + (tp_points * point)
+            else:
+                tp = price + atr * tp_mult
             order_type = mt5.ORDER_TYPE_BUY
         elif signal == "SELL":
             price = float(tick.bid)
             sl = price + atr * sl_mult
-            tp = price - atr * tp_mult
+            if tp_points is not None:
+                point = sym.point
+                tp = price - (tp_points * point)
+            else:
+                tp = price - atr * tp_mult
             order_type = mt5.ORDER_TYPE_SELL
         else:
             logging.info("No execution for signal=%s", signal)
             return None
 
+        # Scalping: apply volume multiplier to reduce lot size for faster micro-trades
         lot = calculate_lot_from_risk(symbol, sl, price)
+        if is_scalp:
+            scalp_params = config.get("scalping_params", {})
+            vol_mult = scalp_params.get("volume_multiplier", 0.5)
+            lot = lot * vol_mult
+            logging.info("[SCALP] Adjusted lot size: %.2f * %.2f = %.2f", calculate_lot_from_risk(symbol, sl, price), vol_mult, lot)
+
         request = {
             "action": mt5.TRADE_ACTION_DEAL,
             "symbol": symbol,
@@ -784,12 +874,12 @@ def execute_trade(symbol, signal, ind, extra_comment="AutoBot"):
             "tp": float(tp),
             "deviation": 20,
             "magic": int(config.get("magic_number", 123456)),
-            "comment": extra_comment,
+            "comment": f"{extra_comment}{'_SCALP' if is_scalp else ''}",
             "type_time": mt5.ORDER_TIME_GTC,
             "type_filling": mt5.ORDER_FILLING_RETURN,
         }
 
-        logging.info("Sending %s order for %s: entry=%.5f, SL=%.5f, TP=%.5f, lot=%.2f", signal, symbol, price, sl, tp, lot)
+        logging.info("Sending %s order for %s%s: entry=%.5f, SL=%.5f, TP=%.5f, lot=%.2f", signal, symbol, " (SCALP)" if is_scalp else "", price, sl, tp, lot)
         result = mt5.order_send(request)
         
         # Check result and log confirmation
@@ -799,10 +889,10 @@ def execute_trade(symbol, signal, ind, extra_comment="AutoBot"):
             return None
         
         if result.retcode == mt5.TRADE_RETCODE_DONE:
-            logging.info("✅ Trade CONFIRMED: %s %s | Order #%d | Entry: %.5f | SL: %.5f | TP: %.5f | Lot: %.2f",
-                         signal, symbol, result.order, price, sl, tp, lot)
+            logging.info("✅ Trade CONFIRMED: %s %s%s | Order #%d | Entry: %.5f | SL: %.5f | TP: %.5f | Lot: %.2f",
+                         signal, symbol, " (SCALP)" if is_scalp else "", result.order, price, sl, tp, lot)
             # Send alert notifications (MT5 journal + Desktop + Sound + Telegram + Email)
-            msg = f"✅ Trade Executed!\n{signal} {symbol}\nEntry: {price:.5f}\nSL: {sl:.5f}\nTP: {tp:.5f}\nOrder #{result.order}"
+            msg = f"✅ Trade Executed!\n{signal} {symbol}{'(SCALP)' if is_scalp else ''}\nEntry: {price:.5f}\nSL: {sl:.5f}\nTP: {tp:.5f}\nOrder #{result.order}"
             send_mt5_journal_alert("Trade Executed", f"{signal} {symbol} @ {price:.5f} | Order #{result.order} | Lot: {lot:.2f}")
             send_desktop_notification("✅ Trade Executed", f"{signal} {symbol} @ {price:.5f}")
             play_notification_sound("success")
@@ -1240,8 +1330,15 @@ def run_starter_loop():
             
             for s in symbols:
                 try:
-                    sig, reason, ind = analyze_symbol(s, profile, mt5_ready=mt5_ready)
-                    logging.info("%s -> %s (%s)", s, sig, reason)
+                    # Route to scalping or standard analysis based on config
+                    scalping_enabled = config.get("scalping", False)
+                    if scalping_enabled:
+                        sig, reason, ind = analyze_symbol_scalp(s, profile, mt5_ready=mt5_ready)
+                        logging.info("%s -> %s (%s) [SCALP]", s, sig, reason)
+                    else:
+                        sig, reason, ind = analyze_symbol(s, profile, mt5_ready=mt5_ready)
+                        logging.info("%s -> %s (%s)", s, sig, reason)
+                    
                     append_perf(s, "classic", sig, reason, ind)
 
                     # determine last price for comparison and dashboard
@@ -1312,7 +1409,8 @@ def run_starter_loop():
                         send_telegram_alert(msg)
                         # Execute trade if live_trading enabled
                         if config.get("live_trading", False):
-                            res = execute_trade(s, sig, ind)
+                            scalping_enabled = config.get("scalping", False)
+                            res = execute_trade(s, sig, ind, is_scalp=scalping_enabled)
                             if res and not res.get("sim"):
                                 # Verify the trade was executed
                                 verify_trade_execution(s, sig)

@@ -463,6 +463,68 @@ HFT safety
 
 - If you enable `high_frequency: true` in `config.yaml`, the bot will use faster sampling. To avoid accidental live HFT you must also set `hft_live_enable: true` to permit live execution in HFT mode. Otherwise the bot stays in dry-run/paper_trade.
 
+Scalping mode
+
+- Scalping is a rapid-fire trading strategy that captures small profits on tight timeframes (M1/M5 instead of M15). **Use with caution** — tighter stops mean higher slippage risk.
+
+**Enable scalping:**
+
+```yaml
+# config.yaml
+scalping: true
+scalping_params:
+  min_profit_pips: 5            # Close when 5 pips profit is reached
+  max_hold_time_minutes: 5      # Max time to hold a scalp position
+  volume_multiplier: 0.5        # Use 50% of standard lot size (micro lots)
+  check_interval: 10            # Check every 10 seconds for exit
+```
+
+**How scalping works:**
+
+1. **Entry**: Uses M1 (1-minute) bars with tight RSI bands (< 25 for BUY, > 75 for SELL)
+2. **Confirmation**: Checks M5 trend to avoid counter-trend scalps
+3. **Exit**: Auto-closes when profit reaches `min_profit_pips` OR `max_hold_time_minutes` expires
+4. **Risk**: Micro lot sizing (`volume_multiplier: 0.5`) reduces per-trade risk
+
+**Recommended settings for beginners:**
+
+```yaml
+scalping_params:
+  min_profit_pips: 10           # Start conservative (10 pips = $100 on EUR/USD)
+  max_hold_time_minutes: 5      # Don't hold longer than 5 minutes
+  volume_multiplier: 0.25       # Extra tiny lots for learning
+  check_interval: 10
+```
+
+**Testing scalping:**
+
+```powershell
+# 1. Enable in config
+# 2. Run dry-run to verify signals
+python TheBot.py --dry-run --once
+
+# 3. Paper trade to simulate fills
+python TheBot.py --once
+
+# 4. Small demo account live test (after passing phases 1-3)
+python TheBot.py --once
+```
+
+**⚠️ Scalping Risks:**
+
+- **Slippage**: Tight stops are vulnerable to price gaps and slippage
+- **Breakeven**: Need consistent profits to offset spread/commission costs
+- **Stress**: Fast exits require constant monitoring
+- **Whipsaws**: Quick reversals can trigger stop-loss repeatedly
+
+**When to use scalping:**
+
+- ✅ High volatility pairs (EURUSD during London open, GBPUSD, etc.)
+- ✅ Large timeframe volatility (when ATR/ADX suggests choppy market)
+- ✅ After major news (spike events with wide spreads)
+- ❌ Low liquidity pairs (XAUUSD, exotics)
+- ❌ During low volatility (Asian session, quiet hours)
+
 Model integration
 
 - A placeholder ML model is available at `models/model.py`. It will train a tiny LogisticRegression on synthetic data if no `models/model.pkl` exists. Replace with your trained model (joblib dump) to use real predictions.
