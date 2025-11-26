@@ -451,6 +451,120 @@ with st.expander("Generate proposed action (download JSON)"):
 
 st.markdown('</div>', unsafe_allow_html=True)
 
+# ============ INDICATOR ANALYSIS ============
+st.markdown('<div class="card">', unsafe_allow_html=True)
+st.markdown('<div class="card-header">🔍 Advanced Indicator Analysis & SMC Bias</div>', unsafe_allow_html=True)
+
+try:
+    from indicator_analysis import IndicatorAnalyzer
+    
+    # Get latest indicators from runtime state
+    if runtime_state:
+        symbols_available = list(runtime_state.keys())
+        selected_sym = st.selectbox("Select Symbol for Analysis:", symbols_available, key="analysis_symbol")
+        
+        if selected_sym and selected_sym in runtime_state:
+            sym_data = runtime_state[selected_sym]
+            indicators = sym_data.get("indicators", {})
+            last_price = sym_data.get("last_price", None)
+            
+            if indicators:
+                # Mode selector
+                col1, col2 = st.columns(2)
+                with col1:
+                    analysis_mode = st.radio("Analysis Mode:", ["regular", "scalp", "hft"], horizontal=True)
+                with col2:
+                    auto_analyze = st.checkbox("Auto-refresh", value=False)
+                
+                # Run analysis
+                analyzer = IndicatorAnalyzer()
+                analysis = analyzer.analyze(indicators, current_price=last_price, mode=analysis_mode)
+                
+                # Display conclusion prominently
+                conclusion = analysis["conclusion"]
+                col1, col2, col3, col4 = st.columns(4)
+                with col1:
+                    st.metric("Bias", f"{conclusion['bias_emoji']} {conclusion['overall_bias']}")
+                with col2:
+                    st.metric("Confidence", conclusion['confidence'])
+                with col3:
+                    st.metric("Trend Strength", f"{conclusion['trend_score']:.1f}/10")
+                with col4:
+                    st.metric("Market Structure", conclusion['market_structure'])
+                
+                # Tabs for detailed analysis
+                tab1, tab2, tab3, tab4, tab5 = st.tabs(["Breakdown", "Summary Table", "Trend Score", "SMC Bias", "Entry/SL/TP"])
+                
+                with tab1:
+                    st.subheader("Indicator Breakdown")
+                    for indicator, data in analysis["breakdown"].items():
+                        with st.expander(f"📍 {indicator.upper()} - {data['signal']}", expanded=False):
+                            st.write(f"**Value:** {data['value']}")
+                            st.write(f"**Interpretation:** {data['description']}")
+                
+                with tab2:
+                    st.subheader("Summary Table")
+                    df_table = pd.DataFrame(analysis["summary_table"])
+                    st.dataframe(df_table, use_container_width=True, hide_index=True)
+                
+                with tab3:
+                    st.subheader("Trend Strength Score")
+                    score = analysis["trend_strength_score"]
+                    st.progress(score / 10.0, text=f"{score:.1f}/10")
+                    
+                    if score >= 7:
+                        st.success("📈 Strong trend detected. Market has clear directional bias.")
+                    elif score >= 4:
+                        st.info("📊 Developing trend. Momentum is building.")
+                    else:
+                        st.warning("📉 Weak trend. Market is choppy/consolidating.")
+                
+                with tab4:
+                    st.subheader("Smart Money Concepts (SMC) Bias")
+                    smc = analysis["smc_bias"]
+                    
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        st.write("**Market Structure:**")
+                        st.info(f"{smc['market_structure']}\n{smc['market_structure_description']}")
+                        st.write("**Liquidity Direction:**")
+                        st.info(f"{smc['liquidity_direction']}\n{smc['liquidity_description']}")
+                    with col2:
+                        st.write("**Pricing Zone:**")
+                        st.info(f"{smc['pricing_zone']}\n{smc['pricing_description']}")
+                
+                with tab5:
+                    st.subheader("Entry, SL, TP Zones (Not Financial Advice)")
+                    zones = analysis["zones"]
+                    
+                    col1, col2, col3 = st.columns(3)
+                    with col1:
+                        st.markdown("### 🟢 ENTRY ZONE")
+                        st.write(zones['entry']['zone'])
+                        st.caption(zones['entry']['description'])
+                    with col2:
+                        st.markdown("### 🔴 STOP LOSS ZONE")
+                        st.write(zones['sl']['zone'])
+                        st.caption(zones['sl']['description'])
+                    with col3:
+                        st.markdown("### 🟡 TAKE PROFIT ZONE")
+                        st.write(zones['tp']['zone'])
+                        st.caption(zones['tp']['description'])
+                
+                # Full report button
+                with st.expander("📋 View Full Analysis Report"):
+                    report_text = analyzer.format_report(analysis)
+                    st.code(report_text, language="text")
+                    st.download_button("Download Report", data=report_text, file_name=f"analysis_{selected_sym}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt")
+            else:
+                st.warning(f"No indicator data for {selected_sym} yet. Run bot to generate indicators.")
+    else:
+        st.info("Waiting for runtime state data. Run the bot first.")
+except ImportError:
+    st.error("indicator_analysis module not found. Create it first.")
+
+st.markdown('</div>', unsafe_allow_html=True)
+
 # ============ SYMBOL BREAKDOWN ============
 st.markdown('<div class="card">', unsafe_allow_html=True)
 st.markdown('<div class="card-header">📍 Performance by Symbol</div>', unsafe_allow_html=True)
