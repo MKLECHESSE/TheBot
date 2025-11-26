@@ -26,6 +26,12 @@ import pandas as pd
 import numpy as np
 import requests
 
+# Try to import plyer for desktop notifications
+try:
+    from plyer import notification
+except Exception:
+    notification = None
+
 
 # ============================================================
 # 🧩 Setup
@@ -382,12 +388,57 @@ def send_email_alert(subject, body):
         return False
 
 
-def send_telegram_alert(message):
-    token = os.getenv("TELEGRAM_BOT_TOKEN")
-    chat = os.getenv("TELEGRAM_CHAT_ID")
-    if not (token and chat):
-        logging.debug("Telegram not configured; skipping")
+def send_desktop_notification(title, message):
+    """Send a desktop notification using plyer (Windows/macOS/Linux).
+    
+    Args:
+        title: Notification title (e.g., "Trade Executed")
+        message: Notification body (e.g., "BUY EURUSD @ 1.0850")
+    """
+    if notification is None:
+        logging.debug("Plyer not available; skipping desktop notification")
         return False
+    
+    try:
+        notification.notify(
+            title=title,
+            message=message,
+            app_name="TheBot",
+            timeout=10  # notification disappears after 10 seconds
+        )
+        logging.info("Desktop notification sent: %s - %s", title, message)
+        return True
+    except Exception as e:
+        logging.error("Desktop notification failed: %s", e)
+        return False
+
+
+def play_notification_sound(sound_type="success"):
+    """Play a notification sound (Windows only).
+    
+    Args:
+        sound_type: 'success' (beep), 'warning' (double beep), 'error' (low tone)
+    """
+    import winsound
+    try:
+        if sound_type == "success":
+            # Success: short high-pitched beep
+            winsound.Beep(800, 200)  # frequency, duration in ms
+        elif sound_type == "warning":
+            # Warning: double beep
+            winsound.Beep(600, 150)
+            time.sleep(0.1)
+            winsound.Beep(600, 150)
+        elif sound_type == "error":
+            # Error: low tone
+            winsound.Beep(400, 300)
+        logging.info("Sound notification played: %s", sound_type)
+        return True
+    except Exception as e:
+        logging.debug("Sound notification failed: %s", e)
+        return False
+
+
 def send_telegram_alert(message, **kwargs):
     """Send alert via Telegram.
     
@@ -623,9 +674,11 @@ def execute_trade(symbol, signal, ind, extra_comment="AutoBot"):
         if result.retcode == mt5.TRADE_RETCODE_DONE:
             logging.info("✅ Trade CONFIRMED: %s %s | Order #%d | Entry: %.5f | SL: %.5f | TP: %.5f | Lot: %.2f",
                          signal, symbol, result.order, price, sl, tp, lot)
-            # Send alert notifications (MT5 journal + Telegram + Email)
+            # Send alert notifications (MT5 journal + Desktop + Sound + Telegram + Email)
             msg = f"✅ Trade Executed!\n{signal} {symbol}\nEntry: {price:.5f}\nSL: {sl:.5f}\nTP: {tp:.5f}\nOrder #{result.order}"
             send_mt5_journal_alert("Trade Executed", f"{signal} {symbol} @ {price:.5f} | Order #{result.order} | Lot: {lot:.2f}")
+            send_desktop_notification("✅ Trade Executed", f"{signal} {symbol} @ {price:.5f}")
+            play_notification_sound("success")
             send_telegram_alert(msg)
             send_email_alert(f"Trade Executed: {signal} {symbol}", msg)
             return result
@@ -633,6 +686,8 @@ def execute_trade(symbol, signal, ind, extra_comment="AutoBot"):
             logging.error("❌ Trade FAILED: %s %s | Error Code: %d | Message: %s", signal, symbol, result.retcode, result.comment if hasattr(result, 'comment') else "Unknown error")
             error_msg = f"Trade FAILED: {signal} {symbol}\nError: {result.comment if hasattr(result, 'comment') else 'Unknown error'}\nCode: {result.retcode}"
             send_mt5_journal_alert("Trade Failed", f"{signal} {symbol} - Error Code: {result.retcode}")
+            send_desktop_notification("❌ Trade Failed", f"{signal} {symbol} - Error Code {result.retcode}")
+            play_notification_sound("error")
             send_telegram_alert(f"❌ Trade Failed: {signal} {symbol}")
             send_email_alert(f"Trade Failed: {signal} {symbol}", error_msg)
             return result
