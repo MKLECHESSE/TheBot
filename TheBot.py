@@ -388,10 +388,57 @@ def send_telegram_alert(message):
     if not (token and chat):
         logging.debug("Telegram not configured; skipping")
         return False
+def send_telegram_alert(message, **kwargs):
+    """Send alert via Telegram.
+    
+    Args:
+        message: Simple text message or dict with trade details.
+        **kwargs: Optional trade details (symbol, signal, entry, sl, tp, lot, ticket).
+    
+    Supports rich formatting when kwargs contain trade info.
+    """
+    token = os.getenv("TELEGRAM_BOT_TOKEN")
+    chat = os.getenv("TELEGRAM_CHAT_ID")
+    if not (token and chat):
+        logging.debug("Telegram not configured; skipping")
+        return False
+    
+    # Format message if trade details provided
+    if kwargs and isinstance(message, str):
+        # Build rich trade message
+        symbol = kwargs.get("symbol", "")
+        signal = kwargs.get("signal", "")
+        entry = kwargs.get("entry")
+        sl = kwargs.get("sl")
+        tp = kwargs.get("tp")
+        lot = kwargs.get("lot")
+        ticket = kwargs.get("ticket")
+        
+        if signal and symbol:
+            lines = [f"{'='*40}"]
+            lines.append(f"📊 TRADE ALERT")
+            lines.append(f"{'='*40}")
+            lines.append(f"Signal: {signal} {symbol}")
+            if entry is not None:
+                lines.append(f"Entry Price: {entry:.5f}")
+            if sl is not None:
+                lines.append(f"Stop Loss: {sl:.5f}")
+            if tp is not None:
+                lines.append(f"Take Profit: {tp:.5f}")
+            if lot is not None:
+                lines.append(f"Lot Size: {lot:.2f}")
+            if ticket:
+                lines.append(f"Order #: {ticket}")
+            lines.append(f"{'='*40}")
+            lines.append(f"Time: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')}")
+            message = "\n".join(lines)
+    
     try:
-        r = requests.post(f"https://api.telegram.org/bot{token}/sendMessage", data={"chat_id": chat, "text": message}, timeout=10)
+        r = requests.post(f"https://api.telegram.org/bot{token}/sendMessage", 
+                         data={"chat_id": chat, "text": message}, 
+                         timeout=10)
         if r.ok:
-            logging.info("Telegram sent")
+            logging.info("Telegram sent: %s", message[:50])
             return True
         logging.error("Telegram send failed: %s", r.text)
         return False
