@@ -25,6 +25,8 @@ except Exception:
 import pandas as pd
 import numpy as np
 import requests
+import asyncio
+import importlib
 
 # Try to import plyer for desktop notifications
 try:
@@ -69,6 +71,21 @@ if PREFER_MARKET_WATCH_FLAG:
     USE_MARKET_WATCH = True
 DELAY = config.get("symbol_delay", 2)
 CHECK_INTERVAL = config.get("check_interval", 60)
+# High-frequency trading scaffold: lowers delays and intervals when enabled
+HIGH_FREQUENCY = config.get("high_frequency", False)
+if HIGH_FREQUENCY:
+    # in HFT mode we expect dry-run or paper_trade only unless user explicitly enables live HFT
+    DELAY = float(config.get("hft_symbol_delay", 0.2))
+    CHECK_INTERVAL = float(config.get("hft_check_interval", 1))
+
+# WebSocket server URL used for push updates (optional)
+WS_SERVER_URL = config.get("ws_server_url", "ws://localhost:8765")
+WS_SERVER_ENABLED = config.get("ws_server_enabled", True)
+WS_SERVER_TOKEN = config.get("ws_server_token") or os.getenv("WS_SERVER_TOKEN")
+
+# HFT live-enable safety gate: must be explicitly set to true to allow live HFT
+HFT_LIVE_ENABLE = config.get("hft_live_enable", False)
+HFT_LIVE_PASSPHRASE = config.get("hft_live_passphrase") or os.getenv("HFT_LIVE_PASSPHRASE")
 
 PROFILES = config.get("profiles", {})
 SYMBOL_GROUPS = config.get("symbols", {})
@@ -299,6 +316,116 @@ def analyze_symbol(symbol, profile, mt5_ready=False):
         pass
 
     return signal, "m15_signal", ind_m15
+
+
+def generate_prediction(indicators, df_latest=None, profile=None):
+    """Generate a simple heuristic prediction from indicators.
+
+    Returns a dict: {prediction: 'UP'|'DOWN'|'NEUTRAL', confidence: 0.0-1.0}
+    This is a lightweight placeholder — replace with your ML model or strategy.
+    """
+    try:
+        # if a user-supplied ML model exists, try to use it and return probabilities
+        try:
+            model_mod = importlib.import_module("models.model")
+            if hasattr(model_mod, "predict_proba_features"):
+                # build a simple feature vector from indicators
+                fv = [indicators.get(k, 0) for k in ("ema_fast", "ema_slow", "macd_hist", "rsi", "atr")]
+                proba = model_mod.predict_proba_features(fv)
+                # proba expected as dict {'down': p0, 'up': p1} or array-like
+                if isinstance(proba, dict):
+                    up_p = float(proba.get("up", 0.0))
+                    down_p = float(proba.get("down", 0.0))
+                else:
+                    down_p = float(proba[0]) if len(proba) > 0 else 0.0
+                    up_p = float(proba[1]) if len(proba) > 1 else 0.0
+                direction = "UP" if up_p > 0.55 else "DOWN" if down_p > 0.55 else "NEUTRAL"
+                return {"prediction": direction, "confidence": up_p, "prob_up": up_p, "prob_down": down_p}
+        except Exception:
+            # fall back to heuristics below
+            pass
+        ema_fast = indicators.get("ema_fast", 0)
+        ema_slow = indicators.get("ema_slow", 0)
+        macd = indicators.get("macd_hist", 0)
+        rsi = indicators.get("rsi", 50)
+
+        # direction by EMA crossover
+        if ema_fast > ema_slow:
+            direction = "UP"
+        elif ema_fast < ema_slow:
+            direction = "DOWN"
+        else:
+            direction = "NEUTRAL"
+
+        # confidence: scale of MACD magnitude + distance of RSI from 50
+        macd_score = min(1.0, abs(macd) / max(abs(ema_slow) if ema_slow else 1.0, 0.0001))
+        rsi_score = abs(rsi - 50) / 50.0
+        confidence = float(max(0.0, min(1.0, 0.5 * macd_score + 0.5 * rsi_score)))
+
+        return {"prediction": direction, "confidence": confidence}
+    except Exception:
+        return {"prediction": "NEUTRAL", "confidence": 0.0}
+
+
+def _load_runtime_state():
+    path = os.path.join(BASE_DIR, "runtime_state.json")
+    try:
+        if os.path.exists(path):
+            with open(path, "r", encoding="utf-8") as f:
+                return json.load(f)
+    except Exception:
+        pass
+    return {}
+
+
+def _save_runtime_state(state):
+    path = os.path.join(BASE_DIR, "runtime_state.json")
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(state, f, indent=2, ensure_ascii=False)
+        return True
+    except Exception:
+        logging.exception("Failed to write runtime_state.json")
+        return False
+
+
+def _broadcast_to_ws(message):
+    """Send JSON message to remote ws server (best-effort)."""
+    if not WS_SERVER_ENABLED or not WS_SERVER_URL:
+        return False
+    try:
+        import websockets
+        # append token to query string if provided
+        url = WS_SERVER_URL
+        if WS_SERVER_TOKEN:
+            from urllib.parse import urlparse, urlencode, urlunparse, parse_qsl
+            p = urlparse(url)
+            q = dict(parse_qsl(p.query))
+            q["token"] = WS_SERVER_TOKEN
+            p = p._replace(query=urlencode(q))
+            url = urlunparse(p)
+
+        async def _send():
+            try:
+                async with websockets.connect(url) as ws:
+                    await ws.send(json.dumps(message))
+            except Exception:
+                pass
+        # run in separate event loop to avoid blocking main thread too long
+        try:
+            asyncio.run(_send())
+        except Exception:
+            # On existing running loop (e.g., in some environments) create task
+            try:
+                loop = asyncio.get_event_loop()
+                if loop.is_running():
+                    asyncio.create_task(_send())
+            except Exception:
+                pass
+        return True
+    except Exception:
+        logging.debug("websockets not available; skipping ws broadcast")
+        return False
 
 
 # ============================================================
@@ -983,6 +1110,24 @@ def append_perf(symbol, profile_name, signal, reason, indicators=None):
 
 def run_starter_loop():
     mt5_ready = ensure_mt5_init()
+    # runtime state persisted for dashboard/live UI
+    runtime_state = _load_runtime_state()
+    significant_move_pct = float(config.get("significant_move_pct", 0.0005))
+
+    # Enforce HFT safety: if high frequency is enabled and live trading requested,
+    # require explicit HFT enable + passphrase match. Otherwise force DRY_RUN/paper.
+    if HIGH_FREQUENCY and config.get("live_trading", False):
+        if not HFT_LIVE_ENABLE:
+            logging.error("High-frequency mode enabled but hft_live_enable is not true. For safety, live trading disabled.")
+            # force dry-run to avoid accidental live HFT
+            config["live_trading"] = False
+        else:
+            # if passphrase is configured, require it to match env var
+            if HFT_LIVE_PASSPHRASE:
+                env_pass = os.getenv("HFT_LIVE_PASSPHRASE")
+                if not env_pass or env_pass != HFT_LIVE_PASSPHRASE:
+                    logging.error("HFT passphrase mismatch. For safety, live trading disabled.")
+                    config["live_trading"] = False
     # If live_trading is requested but MT5 initialization failed, allow running when
     # paper_trade is enabled (local simulation of execution). Otherwise exit.
     if not mt5_ready and config.get("live_trading", False) and not config.get("paper_trade", False):
@@ -1098,6 +1243,69 @@ def run_starter_loop():
                     sig, reason, ind = analyze_symbol(s, profile, mt5_ready=mt5_ready)
                     logging.info("%s -> %s (%s)", s, sig, reason)
                     append_perf(s, "classic", sig, reason, ind)
+
+                    # determine last price for comparison and dashboard
+                    last_price = None
+                    try:
+                        if mt5_ready and mt5 is not None:
+                            tick = mt5.symbol_info_tick(s)
+                            if tick is not None:
+                                last_price = float(getattr(tick, "last", None) or getattr(tick, "ask", None) or getattr(tick, "bid", None))
+                        if last_price is None:
+                            # attempt to fetch latest close
+                            try:
+                                df_latest = fetch_mt5_rates(s, getattr(mt5, "TIMEFRAME_M15", 15), n=3, mt5_ready=mt5_ready)
+                                if df_latest is not None and not df_latest.empty:
+                                    last_price = float(df_latest.iloc[-1]["close"])
+                            except Exception:
+                                last_price = None
+                    except Exception:
+                        last_price = None
+
+                    # generate a lightweight prediction
+                    pred = generate_prediction(ind, None, profile)
+                    prev = runtime_state.get(s, {})
+                    update_needed = False
+                    try:
+                        prev_price = float(prev.get("last_price")) if prev.get("last_price") is not None else None
+                    except Exception:
+                        prev_price = None
+                    prev_signal = prev.get("signal")
+                    prev_prediction = prev.get("prediction")
+                    # update on signal change
+                    if sig != prev_signal:
+                        update_needed = True
+                    # update on prediction change
+                    if pred.get("prediction") != prev_prediction:
+                        update_needed = True
+                    # update on significant price movement
+                    try:
+                        if prev_price and last_price:
+                            if abs(last_price - prev_price) / prev_price >= significant_move_pct:
+                                update_needed = True
+                    except Exception:
+                        pass
+
+                    if update_needed:
+                        runtime_state[s] = {
+                            "ts": datetime.now(timezone.utc).isoformat(),
+                            "symbol": s,
+                            "last_price": last_price,
+                            "signal": sig,
+                            "reason": reason,
+                            "indicators": ind,
+                            "prediction": pred.get("prediction"),
+                            "confidence": pred.get("confidence", 0.0),
+                            "prob_up": pred.get("prob_up"),
+                            "prob_down": pred.get("prob_down")
+                        }
+                        _save_runtime_state(runtime_state)
+                        # broadcast to WS server (best-effort)
+                        try:
+                            _broadcast_to_ws({s: runtime_state[s]})
+                        except Exception:
+                            pass
+
                     if sig in ("BUY", "SELL"):
                         msg = f"{sig} {s} reason={reason}"
                         send_email_alert("Trading Alert", msg)

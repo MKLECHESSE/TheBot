@@ -143,11 +143,7 @@ python TheBot.py
 
 ---
 
-## 🖥️ Deploying to VPS (24/7 Trading)
-
-Once you've passed all demo tests, deploy to a Windows VPS for automated trading:
-
-### Quick VPS Setup (5 Steps)
+### Phase 4: Extended 24-Hour Run ⏳
 
 **See VPS_DEPLOYMENT_COMPLETE.md for full guide**
 
@@ -448,3 +444,25 @@ Your bot is **production-ready**. Follow the test plan, monitor carefully, and y
 **Last Updated**: 2025-11-26  
 **Version**: 2.0  
 **Status**: ✅ Ready for Testing & Deployment
+
+WebSocket live updates
+
+- To enable push-based live updates you can run the included WebSocket server on the same machine:
+
+```powershell
+& .\.venv\Scripts\python.exe ws_server.py
+```
+
+Then start the bot (it will broadcast updates to `ws://localhost:8765` by default):
+
+```powershell
+& .\.venv\Scripts\python.exe TheBot.py --dry-run
+```
+
+HFT safety
+
+- If you enable `high_frequency: true` in `config.yaml`, the bot will use faster sampling. To avoid accidental live HFT you must also set `hft_live_enable: true` to permit live execution in HFT mode. Otherwise the bot stays in dry-run/paper_trade.
+
+Model integration
+
+- A placeholder ML model is available at `models/model.py`. It will train a tiny LogisticRegression on synthetic data if no `models/model.pkl` exists. Replace with your trained model (joblib dump) to use real predictions.

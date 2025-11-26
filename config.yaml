@@ -85,6 +85,21 @@ check_interval: 60
 risk_percentage: 1
 atr_sl_multiplier: 2
 atr_tp_multiplier: 4
+# High-frequency trading options (disabled by default). Use with caution.
+high_frequency: false
+# per-symbol delay when HFT enabled (seconds)
+hft_symbol_delay: 0.2
+# main loop check interval when HFT enabled (seconds)
+hft_check_interval: 1
+# Require explicit enable to allow live trading in HFT mode (safety gate)
+hft_live_enable: false
+# WebSocket server settings for push updates (dashboard)
+ws_server_enabled: true
+ws_server_url: "ws://localhost:8765"
+ws_server_token: "changeme"
+# HFT passphrase (required to enable live HFT). Set this in config.yaml and also set
+# the same value in the environment variable `HFT_LIVE_PASSPHRASE` when starting the bot.
+hft_live_passphrase: ""
 
 trailing:
   multiplier: 1.5

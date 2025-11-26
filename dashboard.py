@@ -7,6 +7,7 @@ import streamlit as st
 import plotly.graph_objects as go
 import plotly.express as px
 from datetime import datetime, timedelta, timezone
+import streamlit.components.v1 as components
 
 st.set_page_config(page_title="TheBot Trading Dashboard", layout="wide", initial_sidebar_state="expanded")
 
@@ -96,6 +97,42 @@ st.markdown("""
 BASE_DIR = os.path.dirname(__file__) or "."
 PERF_LOG = os.path.join(BASE_DIR, "performance_log.csv")
 BACKTEST_JSON = os.path.join(BASE_DIR, "backtest_results.json")
+RUNTIME_STATE = os.path.join(BASE_DIR, "runtime_state.json")
+WS_CLIENT_HTML_TEMPLATE = """
+<div id="thebot-live" style="color:#fff;font-family:Segoe UI,Arial;">
+    <h3 style="color:#00d9ff;">Live Feed</h3>
+    <div id="feed"></div>
+</div>
+<script>
+    const feed = document.getElementById('feed');
+    const addr = 'ws://localhost:8765';
+    const token = '%(token)s';
+    try {
+        const url = token && token.length > 0 ? addr + '?token=' + encodeURIComponent(token) : addr;
+        const ws = new WebSocket(url);
+        ws.onopen = () => { console.log('Connected to TheBot WS'); };
+        ws.onmessage = (ev) => {
+            try {
+                const data = JSON.parse(ev.data);
+                let html = '';
+                if (data && typeof data === 'object') {
+                    if (Object.keys(data).length > 0 && Object.values(data).every(v=>v && v.symbol)) {
+                        for (const k of Object.keys(data)) {
+                            const it = data[k];
+                            html += `<div style="padding:8px;border-bottom:1px solid rgba(255,255,255,0.05)"><strong>${it.symbol}</strong> — ${it.signal} — ${it.prediction} (${(it.confidence*100).toFixed(1)}%)<div style="font-size:12px;color:#aaa">${it.ts}</div></div>`;
+                        }
+                    } else if (data.symbol) {
+                        const it = data;
+                        html = `<div style="padding:8px;border-bottom:1px solid rgba(255,255,255,0.05)"><strong>${it.symbol}</strong> — ${it.signal} — ${it.prediction} (${(it.confidence*100).toFixed(1)}%)<div style="font-size:12px;color:#aaa">${it.ts}</div></div>`;
+                    }
+                }
+                feed.innerHTML = html || JSON.stringify(data);
+            } catch(e) { console.error(e); }
+        };
+        ws.onclose = () => { console.log('WS closed'); };
+    } catch(e) { console.error('WS init failed', e); }
+</script>
+"""
 
 @st.cache_data
 def load_perf_log(path):
@@ -123,6 +160,17 @@ def load_backtest(path):
     except:
         return None
 
+
+@st.cache_data
+def load_runtime_state(path):
+    if not os.path.exists(path):
+        return {}
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f) or {}
+    except Exception:
+        return {}
+
 # Load data
 perf_df = load_perf_log(PERF_LOG)
 backtest = load_backtest(BACKTEST_JSON)
@@ -135,9 +183,19 @@ st.markdown("---")
 with st.sidebar:
     st.header("⚙️ Controls")
     refresh_rate = st.select_slider("Auto-refresh interval (seconds)", [5, 10, 30, 60], value=30)
+    live_updates = st.checkbox("Enable auto-reload (live)", value=False)
     show_details = st.checkbox("Show trade details", value=True)
     show_backtest = st.checkbox("Show backtest metrics", value=True)
     time_filter = st.selectbox("Time filter", ["All", "Today", "This Week", "This Month"])
+
+    ws_token_input = st.text_input("WS token (optional)", value=st.secrets.get("WS_SERVER_TOKEN", ""))
+
+if live_updates:
+    # inject a tiny JS refresher using the selected refresh_rate
+    try:
+        components.html(f"<script>setInterval(()=>location.reload(), {int(refresh_rate) * 1000});</script>", height=0)
+    except Exception:
+        pass
 
 # ============ MAIN METRICS CARD ============
 if not perf_df.empty:
@@ -170,6 +228,9 @@ if not perf_df.empty:
 
 # ============ CHARTS ROW ============
 col_left, col_right = st.columns((1.5, 1))
+
+# Load runtime state (predictions & live signals)
+runtime = load_runtime_state(RUNTIME_STATE)
 
 with col_left:
     st.markdown('<div class="card">', unsafe_allow_html=True)
@@ -223,6 +284,49 @@ with col_right:
         st.info("No signals to display")
     
     st.markdown('</div>', unsafe_allow_html=True)
+
+# ============ LIVE PREDICTIONS & SIGNALS ============
+st.markdown('<div class="card">', unsafe_allow_html=True)
+st.markdown('<div class="card-header">🔮 Live Predictions & Signals</div>', unsafe_allow_html=True)
+if not runtime:
+    st.info("No live runtime state available. Run the bot to populate predictions.")
+else:
+    cols = st.columns(3)
+    i = 0
+    for sym, info in runtime.items():
+        col = cols[i % 3]
+        with col:
+            pred = info.get("prediction", "NEUTRAL")
+            conf = info.get("confidence", 0.0)
+            sig = info.get("signal", "HOLD")
+            price = info.get("last_price")
+            ts = info.get("ts")
+            badge = f"<div class=\"symbol-badge\">{sym}</div>"
+            st.markdown(badge, unsafe_allow_html=True)
+            st.write(f"**Signal:** <span class=\"signal-{'buy' if sig=='BUY' else 'sell' if sig=='SELL' else 'hold'}\">{sig}</span>")
+            st.write(f"**Prediction:** {pred}  —  Confidence: {conf:.2f}")
+            # show model probabilities if available
+            prob_up = info.get("prob_up")
+            prob_down = info.get("prob_down")
+            if prob_up is not None or prob_down is not None:
+                pu = float(prob_up) if prob_up is not None else 0.0
+                pdn = float(prob_down) if prob_down is not None else 0.0
+                st.write(f"**P(up):** {pu:.2f}  —  **P(down):** {pdn:.2f}")
+            st.write(f"**Price:** {price}")
+            st.caption(f"Updated: {ts}")
+            if show_details:
+                with st.expander("Indicators"):
+                    st.json(info.get("indicators", {}))
+        i += 1
+st.markdown('</div>', unsafe_allow_html=True)
+
+# Inject the WS client HTML as a small live feed (non-intrusive)
+try:
+    token_escaped = ws_token_input.replace('"', '\\"') if ws_token_input else ""
+    html = WS_CLIENT_HTML_TEMPLATE % {"token": token_escaped}
+    components.html(html, height=220)
+except Exception:
+    pass
 
 # ============ POSITIONS & TRADES ============
 st.markdown('<div class="card">', unsafe_allow_html=True)

@@ -12,3 +12,6 @@ plotly
 plyer
 # MetaTrader5 is Windows-only; optional for live trading on local machine
 # MetaTrader5
+scikit-learn
+websockets
+joblib

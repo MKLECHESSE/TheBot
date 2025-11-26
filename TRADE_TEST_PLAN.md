@@ -69,7 +69,7 @@ Verify the bot logic, indicators, and notifications without placing real trades.
 
 4. **Expected log output**
 
-   ```
+   ```log
    2025-11-26 10:00:00,123 [INFO] MT5 initialized
    2025-11-26 10:00:00,456 [INFO] FX Vol 20 -> HOLD (adx_low)
    2025-11-26 10:00:02,789 [INFO] Cycle complete
@@ -86,11 +86,11 @@ Verify the bot logic, indicators, and notifications without placing real trades.
 
 ## 🎯 Test Phase 2: Paper Trading Mode (Simulated Orders)
 
-### Objective
+### Objective (Phase 2)
 
 Test the full trading workflow with simulated order execution (no real money at risk).
 
-### Steps
+### Steps (Phase 2)
 
 1. **Update config.yaml**
 
@@ -117,7 +117,7 @@ Test the full trading workflow with simulated order execution (no real money at 
    - [ ] `proposed_changes.json` created/updated
    - [ ] Entry contains action, symbol, signal, timestamp
 
-### Success Criteria
+### Success Criteria (Phase 2)
 
 - ✅ Paper trades simulated successfully
 - ✅ All notification channels triggered
@@ -138,7 +138,7 @@ Before proceeding, verify:
 - [ ] You are prepared to **manually close positions** if needed
 - [ ] You have read the entire trading logic in `TheBot.py`
 
-### Steps
+### Steps (Phase 3)
 
 1. **Enable live trading mode**
 
@@ -171,7 +171,7 @@ Before proceeding, verify:
    - [ ] Check closed position details
    - [ ] Verify P&L calculation
 
-### Success Criteria
+### Success Criteria (Phase 3)
 
 - ✅ Order placed and filled on MT5
 - ✅ All alerts triggered (journal, desktop, sound)
@@ -182,7 +182,7 @@ Before proceeding, verify:
 
 ## 📊 Test Phase 4: Extended Demo Trading (24-Hour Run)
 
-### Objective
+### Objective (Phase 4)
 
 Run the bot continuously and validate:
 
@@ -191,7 +191,7 @@ Run the bot continuously and validate:
 - Connection maintenance
 - Error recovery
 
-### Steps
+### Steps (Phase 4)
 
 1. **Prepare for long run**
 
@@ -233,7 +233,7 @@ Run the bot continuously and validate:
    - [ ] Verify bot detects closed position
    - [ ] Confirm bot continues to trade other symbols
 
-### Success Criteria
+### Success Criteria (Phase 4)
 
 - ✅ Bot runs for 24+ hours without crash
 - ✅ Reconnection logic works
@@ -245,11 +245,11 @@ Run the bot continuously and validate:
 
 ## 🔐 Test Phase 5: Risk Management Validation
 
-### Objective
+### Objective (Phase 5)
 
 Verify risk controls are working correctly.
 
-### Steps
+### Steps (Phase 5)
 
 1. **Verify lot sizing**
    - [ ] Calculate expected lot: `(balance * 0.01) / (entry - SL)`
@@ -272,7 +272,7 @@ Verify risk controls are working correctly.
    - [ ] Monitor equity curve from `performance_log.csv`
    - [ ] Verify drawdown doesn't exceed configured limits
 
-### Success Criteria
+### Success Criteria (Phase 5)
 
 - ✅ Lot sizes calculated correctly
 - ✅ SL exits at correct price
@@ -283,11 +283,11 @@ Verify risk controls are working correctly.
 
 ## 📱 Test Phase 6: Notification Validation
 
-### Objective
+### Objective (Phase 6)
 
 Verify all notification channels work reliably.
 
-### Steps
+### Steps (Phase 6)
 
 1. **MT5 Journal Alerts**
    - [ ] Open MT5 > Terminal > Alerts tab
@@ -309,7 +309,7 @@ Verify all notification channels work reliably.
    - [ ] Run bot: `.venv\Scripts\python.exe TheBot.py --once`
    - [ ] Check Telegram app for formatted message:
 
-     ```
+     ```text
      ════════════════════════════════════════
      📊 TRADE ALERT
      ════════════════════════════════════════
@@ -328,7 +328,7 @@ Verify all notification channels work reliably.
    - [ ] Run bot
    - [ ] Check email inbox for HTML-formatted alert
 
-### Success Criteria
+### Success Criteria (Phase 6)
 
 - ✅ All notification channels triggered
 - ✅ Messages contain complete trade info
@@ -341,9 +341,9 @@ Verify all notification channels work reliably.
 
 If tests fail, check:
 
-### No orders placed
+### Debug: No orders placed
 
-```powershell
+```ps1
 # 1. Check if live_trading is enabled
 Get-Content config.yaml | Select-String "live_trading"
 
@@ -357,7 +357,7 @@ python -c "import MetaTrader5 as mt5; mt5.initialize(); print(mt5.symbol_info('F
 Get-Content bot.log -Tail 50
 ```
 
-### Notifications not received
+### Debug: Notifications not received
 
 ```powershell
 # Check Telegram config
